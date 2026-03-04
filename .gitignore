@@ -3,3 +3,18 @@ venv/
 output/
 __pycache__/
 *.pyc
+
+# Data / uploads (runtime artifacts)
+data/
+pdf_analysis_output/
+
+# Frontend build
+frontend/node_modules/
+frontend/dist/
+
+# Temp analysis scripts
+analyze_*.py
+extract_theme.py
+test_gemini_*.py
+template_analysis.txt
+config/template.pptx
