@@ -146,14 +146,17 @@ class NotebookLMPipeline:
             # ─── Step 3: Generate slide deck ──────────────────
             lang_code = "es" if language == "ES" else "en"
             length_code = SLIDE_LENGTH_SHORT if slide_count <= 5 else SLIDE_LENGTH_DEFAULT
-            focus = prompt or self._build_prompt(language, slide_count)
+            # Use presenter format + no custom prompt for best quality.
+            # NotebookLM's internal design prompting produces significantly
+            # higher-quality slides than any custom focus_prompt we provide.
+            focus = prompt or ""
 
             logger.info("Generating slide deck (language=%s, length=%s)...", lang_code, length_code)
             result = None
             for attempt in range(1, CREATE_RETRIES + 1):
                 result = client.create_slide_deck(
                     notebook_id=notebook_id,
-                    format_code=SLIDE_FORMAT_DETAILED,
+                    format_code=SLIDE_FORMAT_PRESENTER,
                     length_code=length_code,
                     language=lang_code,
                     focus_prompt=focus,
@@ -252,7 +255,7 @@ class NotebookLMPipeline:
                     logger.warning("Failed to delete notebook %s: %s", notebook_id, e)
 
     def _build_prompt(self, language: str, slide_count: int) -> str:
-        """Construct NotebookLM generation prompt."""
+        """Construct fallback prompt (only used when caller passes explicit prompt=...)."""
         lang_label = "Spanish" if language == "ES" else "English"
         return (
             f"Create a professional {slide_count}-slide presentation in {lang_label}. "
