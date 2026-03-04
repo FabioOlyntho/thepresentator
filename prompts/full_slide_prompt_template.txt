@@ -1,0 +1,34 @@
+Design a COMPLETE presentation slide as a single image. The ENTIRE slide — text, layout, typography, icons — must be rendered as one cohesive image.
+
+SLIDE TYPE: {slide_type}
+LAYOUT INSTRUCTIONS: {layout_instructions}
+
+TEXT CONTENT (render ALL of this text in the image, spelled correctly):
+{text_content}
+
+VISUAL DIRECTION: {visual_concept}
+
+DESIGN SYSTEM (follow this EXACTLY — this is a Recodme corporate presentation):
+- Canvas: 16:9 widescreen, 2752x1536 pixels
+- Background: ALWAYS warm cream (#F5F0E8) or light warm gray (#F0EDEA). NEVER dark, NEVER navy, NEVER black
+- Text color: Dark charcoal (#313131) for all titles and body text. ALWAYS dark text on light background
+- Accent color: Recodme red (#E84422) for emphasis words, key headers, or important labels only
+- Secondary accent: Muted beige (#C2BFAA) or dark teal (#01262D) for icons, checkmarks, highlights
+- Typography: Clean sans-serif (like Poppins, Helvetica, or similar)
+  - Titles: Large bold (36-44pt equivalent), dark charcoal
+  - Body: Regular weight (16-20pt equivalent), dark charcoal or dark gray
+  - Bullets: Round bullet points with generous line spacing
+- Icons and illustrations: FLAT line-art style, hand-drawn editorial feel, single color (charcoal, teal, or red), contained within the slide — NOT full-bleed, NOT 3D, NOT photorealistic
+- Layout: Grid-based and structured. Use thin hairline dividers to separate sections. Generous whitespace (30-40% of slide should be breathing room)
+- Subtle background texture: Very faint crosshatch grid lines or paper grain. Almost invisible
+
+CRITICAL STYLE RULES:
+- This must look like a Recodme corporate presentation slide
+- LIGHT warm backgrounds ONLY — cream, beige, light gray. NEVER dark backgrounds
+- Text is the HERO — illustrations are small supporting icons, not dominant visuals
+- Icons should be simple flat line-art (like hand-drawn sketches), not 3D renders or fantasy art
+- NO watercolor, NO gradients, NO glowing effects, NO atmospheric photography, NO sci-fi
+- NO full-bleed images. Illustrations are CONTAINED and proportional (small to medium size)
+- Clean, minimal, structured — think Harvard Business Review or The Economist infographic style
+- ALL text must be crisp, legible, and CORRECTLY SPELLED in the specified language
+- No slide borders or UI chrome. Small "Recodme" watermark text in bottom-right corner

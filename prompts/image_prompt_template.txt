@@ -1,0 +1,20 @@
+Create a professional presentation slide illustration for a {slide_type} slide.
+
+Concept: {visual_concept}
+
+Context: This image accompanies a slide titled "{slide_title}"
+
+Style requirements:
+- Modern corporate aesthetic, clean and minimalist
+- Rich color palette: deep navy blues, warm golds, coral accents, soft whites
+- Professional and polished — suitable for executive presentations
+- Subtle gradients and depth, not flat design
+- 16:9 widescreen aspect ratio
+- High contrast areas for text overlay readability
+
+CRITICAL RULES:
+- Do NOT include any text, words, letters, numbers, or labels in the image
+- Do NOT include UI elements, browser frames, or slide borders
+- The image should be a visual metaphor, abstract illustration, or atmospheric scene
+- NOT a diagram, chart, or infographic with text labels
+- Think editorial magazine quality, not clipart

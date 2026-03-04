@@ -1,0 +1,19 @@
+Create a DESIGN-ONLY background for a presentation slide.
+DO NOT render ANY text, words, letters, numbers, or labels in the image.
+
+SLIDE TYPE: {slide_type}
+VISUAL DIRECTION: {visual_concept}
+BRAND COLORS: Primary red (#E84422), charcoal (#313131), beige (#C2BFAA), dark teal (#01262D), cream (#F5F0E8)
+TEXT ZONES TO KEEP CLEAR: {clear_zones}
+
+RENDER ONLY:
+- Color blocks, gradients, geometric shapes
+- Flat decorative icons (line-art style, editorial)
+- Subtle patterns, textures, divider lines
+- Brand accent elements (red bars, teal shapes, beige fills)
+
+KEEP DESIGNATED ZONES CLEAN for programmatic text overlay.
+Canvas: 16:9 widescreen, 2752x1536 pixels.
+Style: Modern, professional, editorial — like a Recodme corporate presentation.
+Background base: warm cream (#F5F0E8) or light beige.
+NO dark backgrounds, NO photorealistic imagery, NO 3D effects.

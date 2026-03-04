@@ -1,0 +1,22 @@
+# PDF/Document Processing
+PyPDF2>=3.0.0
+pdfplumber>=0.11.0
+python-docx>=1.1.0
+
+# Presentation Generation
+python-pptx>=1.0.0
+
+# API & HTTP
+requests>=2.31.0
+
+# Google APIs (optional - for Google Slides integration)
+google-api-python-client>=2.100.0
+google-auth-httplib2>=0.2.0
+google-auth-oauthlib>=1.2.0
+
+# NotebookLM Integration (install separately if using --notebooklm mode):
+#   pip install notebooklm-mcp-cli>=0.3.0
+
+# Utilities
+python-dotenv>=1.0.0
+Pillow>=10.0.0

@@ -1,0 +1,32 @@
+Create a {slide_count}-slide presentation from this document.
+
+## Document
+- **Filename**: {filename}
+- **Language**: {language}
+- **Objective**: {objective}
+
+## STRICT RULES (violations = reject)
+
+1. **Max 15 words per sentence.** Break longer ideas into bullets.
+2. **Max 30 words per slide body.** Speaker notes handle the detail.
+3. **Max 10 words per title.** Assertion, not topic label.
+4. **Max 8 words per bullet.** Format: "Bold keyword — short phrase"
+5. **ZERO source citations.** No "Pagina X:", no "Segun el documento...", no "El autor menciona..."
+6. **visual_concept = design-only background.** NO text, words, or numbers rendered in the image. Describe decorative elements, color blocks, flat icons, geometric patterns. Leave clear zones for text overlay.
+7. **Use new fields for comparisons:** left_column, right_column, left_header, right_header
+8. **Use checkbox_items for manifesto/rules slides** (type=quote with checkbox rules)
+9. **Bullet format**: Every bullet_points item MUST be "Keyword — explanation" (em dash delimiter). The builder uses this to bold the keyword.
+
+## Slide Structure
+
+- Slide 1: Title slide — bold hook, subtitle with context
+- Slides 2-{penultimate}: Follow the 12-slide blueprint (adapt to {slide_count} slides)
+- Last slide: Powerful conclusion with metaphor + 3 takeaway bullets
+
+## Source Document
+
+```
+{content}
+```
+
+Return ONLY valid JSON. No markdown wrapping, no explanation.

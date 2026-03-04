@@ -1,0 +1,22 @@
+{
+  "name": "Recodme",
+  "colors": {
+    "primary": "#E84422",
+    "secondary": "#C2BFAA",
+    "background": "#F5F0E8",
+    "accent": "#01262D",
+    "text_dark": "#313131",
+    "text_light": "#FFFFFF",
+    "highlight": "#E84422"
+  },
+  "fonts": {
+    "title": "Poppins SemiBold",
+    "body": "Poppins Medium",
+    "accent": "Poppins Light"
+  },
+  "logo_url": "https://raw.githubusercontent.com/FabioOlyntho/email-assets/main/smartoutreachIQ.png",
+  "slide_dimensions": {
+    "width_inches": 13.333,
+    "height_inches": 7.5
+  }
+}
