@@ -42,6 +42,7 @@ def _run_pipeline_sync(
     model: str,
     brand_path: str | None,
     output_dir: str,
+    ocr_engine: str = "gemini",
 ) -> dict:
     """Run the presentation generation pipeline synchronously (called in thread pool)."""
     from presentation_factory import run_pipeline
@@ -77,6 +78,7 @@ def _run_pipeline_sync(
         notebooklm_mode=notebooklm_mode,
         ocr_editable_mode=ocr_editable_mode,
         translate_to=translate_to,
+        ocr_engine=ocr_engine,
     )
 
     return result
@@ -93,6 +95,7 @@ async def run_generation(
     prompt: str | None = None,
     model: str = "gemini-2.5-flash",
     brand_path: str | None = None,
+    ocr_engine: str = "gemini",
 ):
     """
     Run the generation pipeline asynchronously.
@@ -121,6 +124,7 @@ async def run_generation(
             model,
             brand_path,
             output_dir,
+            ocr_engine,
         )
 
         if result.get("success"):

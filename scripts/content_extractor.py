@@ -16,6 +16,7 @@ import os
 import re
 import sys
 import logging
+import unicodedata
 from pathlib import Path
 from dataclasses import dataclass, field
 
@@ -81,7 +82,13 @@ def detect_language(text: str) -> str:
 
 
 def clean_text(text: str) -> str:
-    """Clean extracted text: normalize whitespace, remove artifacts."""
+    """Clean extracted text: normalize Unicode, whitespace, remove artifacts."""
+    # Unicode NFC normalization: compose decomposed accents (e.g. e + ´ → é)
+    text = unicodedata.normalize("NFC", text)
+    # Replace non-breaking spaces and zero-width characters
+    text = text.replace("\u00a0", " ")
+    text = text.replace("\u200b", "").replace("\u200c", "").replace("\u200d", "")
+    text = text.replace("\ufeff", "")  # BOM
     # Normalize line endings
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     # Remove excessive blank lines (keep max 2)

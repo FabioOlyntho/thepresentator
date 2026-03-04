@@ -26,6 +26,8 @@ from ocr_converter import (
     content_to_slidespec,
     convert_notebooklm_to_editable,
     load_ocr_prompt,
+    normalize_text,
+    _parse_raw_text_to_slide,
     VALID_SLIDE_TYPES,
 )
 
@@ -415,6 +417,215 @@ def test_convert_empty_pptx():
     print("  [PASS] Pipeline rejects empty PPTX (no images)")
 
 
+# ─── UTF-8 Normalization Tests ───────────────────────────────────
+
+def test_normalize_text_nfc():
+    """NFC normalization composes decomposed accents."""
+    # "é" as decomposed (e + combining acute accent)
+    decomposed = "e\u0301"
+    result = normalize_text(decomposed)
+    assert result == "é", f"Expected 'é', got {repr(result)}"
+    # "ñ" decomposed
+    assert normalize_text("n\u0303") == "ñ"
+    print("  [PASS] NFC normalization composes decomposed accents")
+
+
+def test_normalize_text_zero_width():
+    """Removes zero-width characters and BOM."""
+    text = "Hello\u200bWorld\ufeff"
+    result = normalize_text(text)
+    assert result == "HelloWorld", f"Expected 'HelloWorld', got {repr(result)}"
+    print("  [PASS] Removes zero-width characters and BOM")
+
+
+def test_normalize_text_nbsp():
+    """Replaces non-breaking spaces with regular spaces."""
+    text = "Hello\u00a0World"
+    result = normalize_text(text)
+    assert result == "Hello World"
+    print("  [PASS] Replaces non-breaking spaces")
+
+
+def test_normalize_text_empty():
+    """Empty string returns empty."""
+    assert normalize_text("") == ""
+    assert normalize_text(None) is None
+    print("  [PASS] Empty/None handling")
+
+
+def test_content_to_slidespec_normalizes_text():
+    """SlideSpec creation normalizes all text fields."""
+    content = {
+        "type": "content",
+        "title": "Tácticas de Influencia",  # normal
+        "body": "e\u0301xito",  # decomposed é
+        "bullet_points": ["Razo\u0301n \u2014 lo\u0301gica", "Coalicio\u0301n \u2014 aliados"],
+        "speaker_notes": "Nota\u00a0con\u200bcaracteres",
+    }
+    spec = content_to_slidespec(content, slide_number=3)
+    assert spec.body == "éxito"
+    assert spec.bullet_points[0] == "Razón — lógica"
+    assert spec.bullet_points[1] == "Coalición — aliados"
+    assert spec.speaker_notes == "Nota concaracteres"
+    print("  [PASS] SlideSpec normalizes all text fields")
+
+
+# ─── Docling OCR Engine Tests ───────────────────────────────────
+
+def test_parse_raw_text_to_slide_basic():
+    """Parse raw OCR text with title and bullets."""
+    raw = "# Key Insight 2\n- Speed — 3x faster\n- Cost — 50% lower\nSome body text here."
+    result = _parse_raw_text_to_slide(raw, slide_number=2, total_slides=5)
+    assert result["title"] == "Key Insight 2"
+    assert len(result["bullet_points"]) == 2
+    assert "Speed — 3x faster" in result["bullet_points"]
+    assert result["type"] == "content"
+    print("  [PASS] Parse raw OCR text with title and bullets")
+
+
+def test_parse_raw_text_to_slide_title_slide():
+    """First slide always becomes title type."""
+    raw = "# My Presentation\n**A Great Topic**\nSome intro text."
+    result = _parse_raw_text_to_slide(raw, slide_number=1, total_slides=8)
+    assert result["type"] == "title"
+    assert result["title"] == "My Presentation"
+    assert result["subtitle"] == "A Great Topic"
+    print("  [PASS] First slide parsed as title type")
+
+
+def test_parse_raw_text_to_slide_conclusion():
+    """Last slide always becomes conclusion type."""
+    raw = "# Final Thoughts\n- Point 1\n- Point 2"
+    result = _parse_raw_text_to_slide(raw, slide_number=8, total_slides=8)
+    assert result["type"] == "conclusion"
+    print("  [PASS] Last slide parsed as conclusion type")
+
+
+def test_parse_raw_text_to_slide_empty():
+    """Empty raw text produces valid fallback."""
+    result = _parse_raw_text_to_slide("", slide_number=3, total_slides=5)
+    assert result["title"] == "Slide 3"
+    assert result["type"] == "content"
+    print("  [PASS] Empty raw text produces valid fallback")
+
+
+def test_parse_raw_text_numbered_bullets():
+    """Numbered list items are parsed as bullet points."""
+    raw = "# Topic\n1. First point\n2. Second point\n3. Third point"
+    result = _parse_raw_text_to_slide(raw, slide_number=3, total_slides=5)
+    assert len(result["bullet_points"]) == 3
+    assert "First point" in result["bullet_points"][0]
+    print("  [PASS] Numbered bullets parsed correctly")
+
+
+def test_parse_raw_text_colon_to_em_dash():
+    """Bullet items with colons get reformatted to em dash style."""
+    raw = "# Topic\n- Speed: very fast\n- Cost: very low"
+    result = _parse_raw_text_to_slide(raw, slide_number=2, total_slides=5)
+    assert "Speed — very fast" in result["bullet_points"]
+    assert "Cost — very low" in result["bullet_points"]
+    print("  [PASS] Colon bullet format → em dash")
+
+
+def test_convert_invalid_ocr_engine():
+    """Pipeline returns error for unknown OCR engine."""
+    result = convert_notebooklm_to_editable(
+        input_pptx="fake.pptx",
+        api_key="test-key",
+        ocr_engine="unknown_engine",
+    )
+    assert not result["success"]
+    assert "Unknown OCR engine" in result["error"]
+    print("  [PASS] Invalid OCR engine returns error")
+
+
+def test_convert_docling_no_api_key():
+    """Docling engine doesn't need API key — should not error on missing key."""
+    pptx_path = _create_mock_empty_pptx()
+    try:
+        old_key = os.environ.pop("GEMINI_API_KEY", None)
+        result = convert_notebooklm_to_editable(
+            input_pptx=pptx_path,
+            api_key=None,
+            ocr_engine="docling",
+        )
+        # Should fail because no images, not because of API key
+        assert not result["success"]
+        assert "No images" in result["error"]
+    finally:
+        if old_key:
+            os.environ["GEMINI_API_KEY"] = old_key
+        Path(pptx_path).unlink()
+    print("  [PASS] Docling engine doesn't need API key")
+
+
+@patch("ocr_converter.extract_slide_content_docling")
+def test_convert_pipeline_docling_mock(mock_docling):
+    """Full conversion pipeline with mocked Docling OCR engine."""
+    pptx_path = _create_mock_notebooklm_pptx(num_slides=3)
+
+    call_count = [0]
+
+    def side_effect(image_bytes, slide_number, total_slides):
+        call_count[0] += 1
+        if slide_number == 1:
+            return {
+                "type": "title",
+                "title": "Docling Extracted Title",
+                "subtitle": "Via OCR",
+                "body": "",
+                "bullet_points": [],
+                "speaker_notes": "",
+            }
+        elif slide_number == 3:
+            return {
+                "type": "conclusion",
+                "title": "Final Summary",
+                "body": "End of presentation.",
+                "bullet_points": ["Key — takeaway"],
+                "speaker_notes": "",
+            }
+        else:
+            return {
+                "type": "content",
+                "title": f"Slide {slide_number} Content",
+                "body": "Some body text.",
+                "bullet_points": ["Point — one", "Point — two"],
+                "speaker_notes": "",
+            }
+
+    mock_docling.side_effect = side_effect
+
+    try:
+        output_pptx = tempfile.mktemp(suffix="_editable.pptx")
+        result = convert_notebooklm_to_editable(
+            input_pptx=pptx_path,
+            output_pptx=output_pptx,
+            ocr_engine="docling",
+        )
+
+        assert result["success"], f"Docling pipeline failed: {result.get('error')}"
+        assert result["metadata"]["total_slides"] == 3
+        assert result["metadata"]["ocr_engine"] == "docling"
+        assert result["metadata"]["title"] == "Docling Extracted Title"
+
+        # Verify output PPTX is valid
+        prs = Presentation(output_pptx)
+        assert len(prs.slides) == 3
+
+        # Verify NO picture shapes (editable mode)
+        for slide in prs.slides:
+            has_picture = any(s.shape_type == 13 for s in slide.shapes)
+            assert not has_picture, "Editable output should not have picture shapes"
+
+        Path(output_pptx).unlink(missing_ok=True)
+        Path(result["files"]["specs_json"]).unlink(missing_ok=True)
+    finally:
+        Path(pptx_path).unlink()
+
+    print("  [PASS] Full Docling mock conversion pipeline (3 slides)")
+
+
 # ─── Run All Tests ────────────────────────────────────────────────
 
 def run_all():
@@ -436,6 +647,22 @@ def run_all():
         ("OCR Failure Fallback", test_convert_pipeline_ocr_failure_fallback),
         ("No API Key Error", test_convert_no_api_key),
         ("Empty PPTX Error", test_convert_empty_pptx),
+        # New: UTF-8 normalization
+        ("Normalize NFC", test_normalize_text_nfc),
+        ("Normalize Zero-Width", test_normalize_text_zero_width),
+        ("Normalize NBSP", test_normalize_text_nbsp),
+        ("Normalize Empty", test_normalize_text_empty),
+        ("SlideSpec Normalizes Text", test_content_to_slidespec_normalizes_text),
+        # New: Docling OCR engine
+        ("Parse Raw Text Basic", test_parse_raw_text_to_slide_basic),
+        ("Parse Raw Text Title", test_parse_raw_text_to_slide_title_slide),
+        ("Parse Raw Text Conclusion", test_parse_raw_text_to_slide_conclusion),
+        ("Parse Raw Text Empty", test_parse_raw_text_to_slide_empty),
+        ("Parse Numbered Bullets", test_parse_raw_text_numbered_bullets),
+        ("Parse Colon → Em Dash", test_parse_raw_text_colon_to_em_dash),
+        ("Invalid OCR Engine", test_convert_invalid_ocr_engine),
+        ("Docling No API Key", test_convert_docling_no_api_key),
+        ("Docling Mock Pipeline", test_convert_pipeline_docling_mock),
     ]
 
     passed = 0

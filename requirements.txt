@@ -17,6 +17,10 @@ google-auth-oauthlib>=1.2.0
 # NotebookLM Integration (install separately if using --notebooklm mode):
 #   pip install notebooklm-mcp-cli>=0.3.0
 
+# OCR Engine (optional - for offline OCR via Docling):
+#   pip install docling>=2.0.0
+# Note: Docling pulls in PyTorch (~2GB). Only install if using --ocr-engine docling.
+
 # Utilities
 python-dotenv>=1.0.0
 Pillow>=10.0.0

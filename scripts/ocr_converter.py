@@ -3,12 +3,14 @@ OCR Converter — Converts NotebookLM image-based PPTX to editable Recodme PPTX.
 
 Pipeline:
   Image PPTX → Extract slide images (python-pptx)
-  → Gemini Vision API (structured JSON extraction per slide)
+  → OCR engine (Gemini Vision or Docling) → structured JSON per slide
   → SlideSpec objects (type, title, bullets, columns, etc.)
   → slide_builder.py with brand config → Editable PPTX
 
 Usage:
     python scripts/ocr_converter.py input_notebooklm.pptx [--output output.pptx] [--brand config/brand.json]
+    python scripts/ocr_converter.py input.pptx --ocr-engine docling   # Use Docling OCR (offline, no API key)
+    python scripts/ocr_converter.py input.pptx --ocr-engine gemini    # Use Gemini Vision (default)
 """
 
 import argparse
@@ -17,8 +19,10 @@ import io
 import json
 import logging
 import os
+import re
 import sys
 import time
+import unicodedata
 from pathlib import Path
 
 import requests
@@ -44,6 +48,207 @@ def load_ocr_prompt() -> str:
     if not path.exists():
         raise FileNotFoundError(f"OCR prompt not found: {path}")
     return path.read_text(encoding="utf-8")
+
+
+def normalize_text(text: str) -> str:
+    """
+    Normalize Unicode text to NFC form and clean common OCR artifacts.
+
+    Fixes issues like:
+    - Decomposed accents (e.g. e + ´ → é) via NFC normalization
+    - Mojibake from encoding mismatches
+    - Non-breaking spaces and other invisible Unicode characters
+    """
+    if not text:
+        return text
+    # NFC normalization: compose decomposed characters
+    text = unicodedata.normalize("NFC", text)
+    # Replace non-breaking spaces with regular spaces
+    text = text.replace("\u00a0", " ")
+    # Replace zero-width characters
+    text = text.replace("\u200b", "")  # zero-width space
+    text = text.replace("\u200c", "")  # zero-width non-joiner
+    text = text.replace("\u200d", "")  # zero-width joiner
+    text = text.replace("\ufeff", "")  # BOM
+    return text
+
+
+def _patch_hf_symlinks():
+    """Patch HuggingFace Hub to use file copy instead of symlinks on Windows."""
+    if sys.platform != "win32":
+        return
+    try:
+        import huggingface_hub.file_download as hf_dl
+        import shutil
+
+        original = hf_dl._create_symlink
+
+        def _copy_fallback(src, dst, new_blob=False):
+            try:
+                original(src, dst, new_blob)
+            except OSError:
+                Path(dst).parent.mkdir(parents=True, exist_ok=True)
+                if Path(dst).exists():
+                    Path(dst).unlink()
+                shutil.copy2(src, dst)
+
+        hf_dl._create_symlink = _copy_fallback
+    except (ImportError, AttributeError):
+        pass
+
+
+def extract_slide_content_docling(
+    image_bytes: bytes,
+    slide_number: int,
+    total_slides: int,
+) -> dict:
+    """
+    Extract structured content from a slide image using Docling OCR (offline).
+
+    Docling uses local ML models for text extraction — no API key needed.
+    It produces raw text that we then parse into our slide JSON schema.
+
+    Args:
+        image_bytes: Raw image bytes (PNG/JPEG).
+        slide_number: 1-indexed slide number.
+        total_slides: Total number of slides.
+
+    Returns:
+        Dict with slide content fields matching SlideSpec.
+    """
+    import tempfile
+
+    _patch_hf_symlinks()
+
+    from docling.document_converter import DocumentConverter
+
+    # Docling works on files, so write image to a temp file
+    suffix = ".png" if image_bytes[:4] == b"\x89PNG" else ".jpg"
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp.write(image_bytes)
+        tmp_path = tmp.name
+
+    try:
+        logger.info("OCR slide %d/%d via Docling (offline)...", slide_number, total_slides)
+        converter = DocumentConverter()
+        result = converter.convert(tmp_path)
+        raw_text = result.document.export_to_markdown()
+        raw_text = normalize_text(raw_text)
+        # Clean Docling markdown artifacts
+        raw_text = _clean_docling_markdown(raw_text)
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+
+    # Parse the raw OCR text into our structured slide format
+    return _parse_raw_text_to_slide(raw_text, slide_number, total_slides)
+
+
+def _clean_docling_markdown(text: str) -> str:
+    """Remove Docling-specific markdown artifacts from OCR output."""
+    # Remove HTML image comments: <!-- image -->
+    text = re.sub(r"<!--\s*image\s*-->", "", text)
+    # Remove Docling HTML picture tags
+    text = re.sub(r"<picture>.*?</picture>", "", text, flags=re.DOTALL)
+    # Normalize excessive whitespace from removals
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _parse_raw_text_to_slide(raw_text: str, slide_number: int, total_slides: int) -> dict:
+    """
+    Parse raw OCR text into structured slide JSON matching our schema.
+
+    Heuristic parsing: first line → title, bullet-like lines → bullet_points,
+    remaining → body. Classifies slide type based on position and content.
+    """
+    lines = [l.strip() for l in raw_text.strip().split("\n") if l.strip()]
+
+    if not lines:
+        return {
+            "type": classify_slide_type(slide_number, total_slides, ""),
+            "title": f"Slide {slide_number}",
+            "body": "",
+            "bullet_points": [],
+            "speaker_notes": "",
+        }
+
+    # First non-empty line is the title (strip markdown heading markers)
+    title = re.sub(r"^#{1,6}\s*", "", lines[0])
+    # Truncate to ~10 words for micro-copy
+    title_words = title.split()
+    if len(title_words) > 10:
+        title = " ".join(title_words[:10])
+
+    remaining = lines[1:]
+    bullet_points = []
+    body_lines = []
+    left_column = []
+    right_column = []
+    subtitle = ""
+
+    for line in remaining:
+        # Detect bullet-like patterns
+        if re.match(r"^[-•*▪▸►]\s+", line):
+            cleaned = re.sub(r"^[-•*▪▸►]\s+", "", line)
+            bullet_points.append(cleaned)
+        elif re.match(r"^\d+[.)]\s+", line):
+            cleaned = re.sub(r"^\d+[.)]\s+", "", line)
+            bullet_points.append(cleaned)
+        elif line.startswith("**") and line.endswith("**"):
+            # Bold line — could be a subtitle or section header
+            if not subtitle:
+                subtitle = line.strip("* ")
+            else:
+                body_lines.append(line.strip("* "))
+        else:
+            body_lines.append(line)
+
+    body = " ".join(body_lines)
+    # Truncate body to ~30 words for micro-copy
+    body_words = body.split()
+    if len(body_words) > 30:
+        body = " ".join(body_words[:30])
+
+    # Format bullets as "Keyword — explanation" if they contain a colon or dash
+    formatted_bullets = []
+    for bp in bullet_points:
+        # If already has em dash, keep it
+        if " — " in bp:
+            formatted_bullets.append(bp)
+        # Convert "Key: explanation" to "Key — explanation"
+        elif ": " in bp and bp.index(": ") < 30:
+            parts = bp.split(": ", 1)
+            formatted_bullets.append(f"{parts[0]} — {parts[1]}")
+        else:
+            formatted_bullets.append(bp)
+
+    # Determine slide type heuristically
+    if slide_number == 1:
+        slide_type = "title"
+    elif slide_number == total_slides:
+        slide_type = "conclusion"
+    elif len(formatted_bullets) >= 2 and any("|" in bp for bp in formatted_bullets):
+        slide_type = "comparison"
+    elif re.search(r"\d{2,}%|\d{1,3}\.\d", title + body):
+        slide_type = "data"
+    elif len(formatted_bullets) >= 2:
+        slide_type = "content"
+    else:
+        slide_type = "content"
+
+    return {
+        "type": slide_type,
+        "title": title,
+        "subtitle": subtitle,
+        "body": body,
+        "bullet_points": formatted_bullets,
+        "left_column": left_column,
+        "right_column": right_column,
+        "left_header": "",
+        "right_header": "",
+        "checkbox_items": [],
+        "speaker_notes": "",
+    }
 
 
 def extract_slide_images(pptx_path: str) -> list[tuple[int, bytes]]:
@@ -171,12 +376,14 @@ def extract_slide_content(
 
     raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
 
+    # Normalize Unicode before parsing
+    raw_text = normalize_text(raw_text)
+
     # Parse JSON response
     try:
         content = json.loads(raw_text)
     except json.JSONDecodeError:
         # Try stripping markdown fences
-        import re
         cleaned = raw_text.strip()
         cleaned = re.sub(r"^```(?:json)?\s*\n?", "", cleaned)
         cleaned = re.sub(r"\n?```\s*$", "", cleaned)
@@ -193,8 +400,10 @@ def content_to_slidespec(content: dict, slide_number: int):
     """
     Convert extracted content dict to a SlideSpec object.
 
+    Applies Unicode normalization to all text fields to fix encoding artifacts.
+
     Args:
-        content: Dict from Gemini Vision extraction.
+        content: Dict from OCR extraction (Gemini or Docling).
         slide_number: 1-indexed slide number.
 
     Returns:
@@ -202,21 +411,29 @@ def content_to_slidespec(content: dict, slide_number: int):
     """
     from gemini_client import SlideSpec
 
+    # Normalize all text fields
+    def _n(val):
+        if isinstance(val, str):
+            return normalize_text(val)
+        if isinstance(val, list):
+            return [normalize_text(v) if isinstance(v, str) else v for v in val]
+        return val
+
     return SlideSpec(
         number=slide_number,
         type=content.get("type", "content"),
-        title=content.get("title", ""),
-        subtitle=content.get("subtitle", ""),
-        body=content.get("body", ""),
-        bullet_points=content.get("bullet_points", []),
+        title=_n(content.get("title", "")),
+        subtitle=_n(content.get("subtitle", "")),
+        body=_n(content.get("body", "")),
+        bullet_points=_n(content.get("bullet_points", [])),
         visual_concept="",  # Not needed for editable mode
-        speaker_notes=content.get("speaker_notes", ""),
+        speaker_notes=_n(content.get("speaker_notes", "")),
         source_reference="",
-        left_column=content.get("left_column", []),
-        right_column=content.get("right_column", []),
-        left_header=content.get("left_header", ""),
-        right_header=content.get("right_header", ""),
-        checkbox_items=content.get("checkbox_items", []),
+        left_column=_n(content.get("left_column", [])),
+        right_column=_n(content.get("right_column", [])),
+        left_header=_n(content.get("left_header", "")),
+        right_header=_n(content.get("right_header", "")),
+        checkbox_items=_n(content.get("checkbox_items", [])),
     )
 
 
@@ -226,6 +443,7 @@ def convert_notebooklm_to_editable(
     api_key: str | None = None,
     brand_path: str | None = None,
     model: str = "gemini-2.5-flash",
+    ocr_engine: str = "gemini",
 ) -> dict:
     """
     Full pipeline: NotebookLM image PPTX → OCR → editable Recodme PPTX.
@@ -236,18 +454,27 @@ def convert_notebooklm_to_editable(
         api_key: Gemini API key (falls back to GEMINI_API_KEY env var).
         brand_path: Path to brand config JSON (uses default Recodme if None).
         model: Gemini model for vision extraction.
+        ocr_engine: OCR engine to use: "gemini" (default, API-based) or "docling" (offline).
 
     Returns:
         Dict with success status, file paths, and metadata.
     """
     start_time = time.time()
 
-    api_key = api_key or os.environ.get("GEMINI_API_KEY")
-    if not api_key:
+    if ocr_engine not in ("gemini", "docling"):
         return {
             "success": False,
-            "error": "No API key. Set GEMINI_API_KEY or pass api_key parameter.",
+            "error": f"Unknown OCR engine: {ocr_engine}. Use 'gemini' or 'docling'.",
         }
+
+    # Gemini engine requires an API key; Docling works offline
+    if ocr_engine == "gemini":
+        api_key = api_key or os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            return {
+                "success": False,
+                "error": "No API key. Set GEMINI_API_KEY or pass api_key parameter.",
+            }
 
     result = {
         "success": False,
@@ -271,26 +498,33 @@ def convert_notebooklm_to_editable(
     total_slides = len(slide_images)
     logger.info("Found %d slide images", total_slides)
 
-    # Step 2: OCR each slide via Gemini Vision
-    logger.info("Step 2: OCR extraction via Gemini Vision")
+    # Step 2: OCR each slide
+    logger.info("Step 2: OCR extraction via %s", ocr_engine.capitalize())
     t0 = time.time()
 
     from gemini_client import PresentationSpec
 
     slide_specs = []
     for i, (slide_num, img_bytes) in enumerate(slide_images):
-        # Rate limiting: pause between API calls (skip first)
-        if i > 0:
+        # Rate limiting for Gemini: pause between API calls (skip first)
+        if ocr_engine == "gemini" and i > 0:
             time.sleep(1.0)
 
         try:
-            content = extract_slide_content(
-                image_bytes=img_bytes,
-                slide_number=slide_num,
-                total_slides=total_slides,
-                api_key=api_key,
-                model=model,
-            )
+            if ocr_engine == "docling":
+                content = extract_slide_content_docling(
+                    image_bytes=img_bytes,
+                    slide_number=slide_num,
+                    total_slides=total_slides,
+                )
+            else:
+                content = extract_slide_content(
+                    image_bytes=img_bytes,
+                    slide_number=slide_num,
+                    total_slides=total_slides,
+                    api_key=api_key,
+                    model=model,
+                )
             spec = content_to_slidespec(content, slide_num)
             slide_specs.append(spec)
             logger.info(
@@ -368,6 +602,7 @@ def convert_notebooklm_to_editable(
         "title": title,
         "total_slides": total_slides,
         "slide_types": [s.type for s in slide_specs],
+        "ocr_engine": ocr_engine,
     }
     result["timing"]["total"] = total_time
 
@@ -394,6 +629,8 @@ def main():
     parser.add_argument("--brand", help="Brand config JSON path")
     parser.add_argument("--model", default="gemini-2.5-flash",
                         help="Gemini model for Vision OCR (default: gemini-2.5-flash)")
+    parser.add_argument("--ocr-engine", choices=["gemini", "docling"], default="gemini",
+                        help="OCR engine: 'gemini' (API, default) or 'docling' (offline)")
 
     args = parser.parse_args()
 
@@ -406,6 +643,7 @@ def main():
         output_pptx=args.output,
         brand_path=args.brand,
         model=args.model,
+        ocr_engine=args.ocr_engine,
     )
 
     if not result["success"]:

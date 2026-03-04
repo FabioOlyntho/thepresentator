@@ -131,6 +131,7 @@ def run_pipeline(
     notebooklm_mode: bool = False,
     ocr_editable_mode: bool = False,
     translate_to: str | None = None,
+    ocr_engine: str = "gemini",
 ) -> dict:
     """
     Run the complete presentation generation pipeline.
@@ -264,6 +265,7 @@ def run_pipeline(
                 api_key=gemini_api_key,
                 brand_path=brand_path,
                 model=model,
+                ocr_engine=ocr_engine,
             )
 
             total_time = round(time.time() - start_time, 2)
@@ -541,6 +543,8 @@ Examples:
     mode_group.add_argument("--ocr-editable", action="store_true",
                             help="NotebookLM quality + OCR → editable Recodme (best of both)")
 
+    parser.add_argument("--ocr-engine", choices=["gemini", "docling"], default="gemini",
+                        help="OCR engine for --ocr-editable mode: 'gemini' (API) or 'docling' (offline)")
     parser.add_argument("--translate-to",
                         help="Translate output PPTX to target language (ES, EN, FR, DE, PT, IT)")
 
@@ -577,6 +581,7 @@ Examples:
         notebooklm_mode=notebooklm_mode,
         ocr_editable_mode=ocr_editable_mode,
         translate_to=args.translate_to,
+        ocr_engine=args.ocr_engine,
     )
 
     if not result["success"]:
