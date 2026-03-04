@@ -281,12 +281,82 @@ def extract_docx(filepath: str) -> tuple[str, int, dict]:
     return full_text, page_estimate, metadata
 
 
+def extract_txt(filepath: str) -> tuple[str, int, dict]:
+    """Extract text from a plain text file."""
+    text = Path(filepath).read_text(encoding="utf-8")
+    # Estimate "pages" from line count (rough: ~40 lines per page)
+    line_count = text.count("\n") + 1
+    page_estimate = max(1, line_count // 40)
+    logger.info("TXT extracted (%d lines, ~%d pages)", line_count, page_estimate)
+    return text, page_estimate, {}
+
+
+def extract_markdown(filepath: str) -> tuple[str, int, dict]:
+    """Extract text from a Markdown file, stripping syntax."""
+    raw = Path(filepath).read_text(encoding="utf-8")
+
+    # Strip common Markdown syntax while preserving content
+    text = raw
+    # Remove images: ![alt](url)
+    text = re.sub(r"!\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    # Convert links: [text](url) → text
+    text = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", text)
+    # Remove HTML tags
+    text = re.sub(r"<[^>]+>", "", text)
+    # Remove heading markers but keep text
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+    # Remove emphasis markers: **bold**, *italic*, __bold__, _italic_
+    text = re.sub(r"\*{1,2}([^*]+)\*{1,2}", r"\1", text)
+    text = re.sub(r"_{1,2}([^_]+)_{1,2}", r"\1", text)
+    # Remove inline code backticks
+    text = re.sub(r"`([^`]+)`", r"\1", text)
+    # Remove code block fences
+    text = re.sub(r"```[a-z]*\n?", "", text)
+    # Remove blockquote markers
+    text = re.sub(r"^>\s?", "", text, flags=re.MULTILINE)
+    # Remove horizontal rules
+    text = re.sub(r"^[-*_]{3,}\s*$", "", text, flags=re.MULTILINE)
+
+    line_count = text.count("\n") + 1
+    page_estimate = max(1, line_count // 40)
+    logger.info("Markdown extracted (%d lines, ~%d pages)", line_count, page_estimate)
+    return text, page_estimate, {"source_format": "markdown"}
+
+
+def extract_pptx_text(filepath: str) -> tuple[str, int, dict]:
+    """
+    Extract text from all shapes in a PPTX file.
+
+    Useful for converting an existing presentation into a new format.
+    """
+    from pptx import Presentation as PptxPresentation
+
+    prs = PptxPresentation(filepath)
+    texts = []
+
+    for slide_idx, slide in enumerate(prs.slides, start=1):
+        slide_texts = []
+        for shape in slide.shapes:
+            if shape.has_text_frame:
+                for paragraph in shape.text_frame.paragraphs:
+                    para_text = paragraph.text.strip()
+                    if para_text:
+                        slide_texts.append(para_text)
+        if slide_texts:
+            texts.append(f"--- Slide {slide_idx} ---\n" + "\n".join(slide_texts))
+
+    full_text = "\n\n".join(texts)
+    slide_count = len(prs.slides)
+    logger.info("PPTX text extracted (%d slides)", slide_count)
+    return full_text, slide_count, {"source_format": "pptx", "slide_count": slide_count}
+
+
 def extract_content(filepath: str, gemini_api_key: str | None = None) -> ExtractedContent:
     """
     Main extraction function. Detects file type and extracts content.
 
     Args:
-        filepath: Path to PDF or DOCX file
+        filepath: Path to PDF, DOCX, TXT, MD, or PPTX file
         gemini_api_key: Optional Gemini API key for OCR of scanned PDFs
 
     Returns:
@@ -305,8 +375,17 @@ def extract_content(filepath: str, gemini_api_key: str | None = None) -> Extract
     elif ext in (".docx", ".doc"):
         raw_text, page_count, metadata = extract_docx(str(path))
         file_type = "DOCX"
+    elif ext == ".txt":
+        raw_text, page_count, metadata = extract_txt(str(path))
+        file_type = "TXT"
+    elif ext == ".md":
+        raw_text, page_count, metadata = extract_markdown(str(path))
+        file_type = "MD"
+    elif ext == ".pptx":
+        raw_text, page_count, metadata = extract_pptx_text(str(path))
+        file_type = "PPTX"
     else:
-        raise ValueError(f"Unsupported file type: {ext} (supported: .pdf, .docx)")
+        raise ValueError(f"Unsupported file type: {ext} (supported: .pdf, .docx, .txt, .md, .pptx)")
 
     text = clean_text(raw_text)
     words = text.split()

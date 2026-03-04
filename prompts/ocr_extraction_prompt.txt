@@ -1,0 +1,25 @@
+Analyze this presentation slide image and extract ALL text content into structured JSON.
+
+Return valid JSON with these exact fields:
+{
+  "type": "title|section|content|comparison|data|quote|conclusion",
+  "title": "Main title text (max 10 words)",
+  "subtitle": "Subtitle if present",
+  "body": "Body text (max 30 words)",
+  "bullet_points": ["Each bullet as 'Keyword — explanation'"],
+  "left_column": ["Left items for comparison slides"],
+  "right_column": ["Right items for comparison slides"],
+  "left_header": "Left column header",
+  "right_header": "Right column header",
+  "checkbox_items": ["Checklist items for rules/manifesto slides"],
+  "speaker_notes": "Infer 2-3 sentences the presenter would say"
+}
+
+RULES:
+1. Preserve original language (Spanish or English)
+2. Format bullets as "Keyword — explanation" (em dash)
+3. Micro-copy: concise text, no paragraphs
+4. Two columns → comparison type with left_column/right_column
+5. Numbered rules/checklist → quote type with checkbox_items
+6. Large number/statistic → data type
+7. This is slide {slide_number} of {total_slides}

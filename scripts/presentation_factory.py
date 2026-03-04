@@ -1,30 +1,34 @@
 """
 Presentation Factory — Main orchestrator for professional presentation generation.
 
-Pipeline: PDF/DOCX → Content Extraction → Gemini Analysis → Slide Specs → AI Images → PPTX
+Pipeline: PDF/DOCX/TXT/MD/PPTX → Content Extraction → Gemini Analysis → Slide Specs → AI Images → PPTX
 
-Four modes:
+Six modes:
   (default):       Editable — Programmatic Recodme layouts (no AI images, instant)
   --full-slide:    Each slide is a COMPLETE AI-rendered image (non-editable)
   --composite:     AI illustrations + python-pptx text layout (legacy approach)
   --notebooklm:    Delegate to NotebookLM for best visual quality (requires auth)
+  --ocr-editable:  NotebookLM → OCR → editable Recodme (best quality + editable)
+  --translate-to:  Translate output PPTX to another language (post-processing)
 
 Usage:
     python presentation_factory.py <input_file> [options]
 
 Options:
-    --title TEXT       Presentation title override
-    --language ES|EN   Force language (auto-detected by default)
-    --slides N         Target slide count (default: 8)
-    --objective TEXT    Presentation objective
-    --output PATH      Output directory (default: ./output)
-    --brand PATH       Brand config JSON (default: config/brand.json)
-    --model TEXT        Gemini model (default: gemini-2.5-flash)
-    --no-images        Skip AI image generation (gradient-only backgrounds)
-    --image-model TEXT  Image generation model (default: gemini-3-pro-image-preview)
-    --full-slide       Use full-slide mode (non-editable AI images)
-    --composite        Use composite mode (AI illustrations + pptx text layout)
-    --notebooklm       Use NotebookLM for generation (best quality, requires auth)
+    --title TEXT         Presentation title override
+    --language ES|EN     Force language (auto-detected by default)
+    --slides N           Target slide count (default: 8)
+    --objective TEXT      Presentation objective
+    --output PATH        Output directory (default: ./output)
+    --brand PATH         Brand config JSON (default: config/brand.json)
+    --model TEXT          Gemini model (default: gemini-2.5-flash)
+    --no-images          Skip AI image generation (gradient-only backgrounds)
+    --image-model TEXT   Image generation model (default: gemini-3-pro-image-preview)
+    --full-slide         Use full-slide mode (non-editable AI images)
+    --composite          Use composite mode (AI illustrations + pptx text layout)
+    --notebooklm         Use NotebookLM for generation (best quality, requires auth)
+    --ocr-editable       NotebookLM quality + OCR conversion to editable Recodme PPTX
+    --translate-to CODE  Translate output to target language (ES, EN, FR, DE, PT, IT)
 """
 
 import argparse
@@ -67,6 +71,49 @@ def sanitize_filename(name: str) -> str:
     return safe.strip()[:80]
 
 
+def _apply_translation(
+    result: dict,
+    translate_to: str,
+    source_lang: str,
+    api_key: str | None,
+    model: str,
+    start_time: float,
+) -> dict:
+    """Apply translation post-processing to a successful pipeline result."""
+    logger.info("=" * 60)
+    logger.info("POST-PROCESSING: Translation → %s", translate_to)
+    logger.info("=" * 60)
+
+    from translator import translate_pptx
+
+    source_pptx = result["files"]["pptx"]
+    translated_path = source_pptx.replace(".pptx", f"_{translate_to.lower()}.pptx")
+
+    t0 = time.time()
+    trans_result = translate_pptx(
+        input_pptx=source_pptx,
+        output_pptx=translated_path,
+        source_lang=source_lang,
+        target_lang=translate_to,
+        api_key=api_key,
+        model=model,
+    )
+    result["timing"]["translation"] = round(time.time() - t0, 2)
+    result["timing"]["total"] = round(time.time() - start_time, 2)
+
+    if trans_result["success"]:
+        result["files"]["pptx_translated"] = trans_result["files"]["pptx"]
+        result["files"]["pptx_original"] = source_pptx
+        result["metadata"]["translated_to"] = translate_to
+        result["metadata"]["translation_changed"] = trans_result["metadata"]["changed_runs"]
+        logger.info("Translation complete: %s", translated_path)
+    else:
+        logger.warning("Translation failed: %s", trans_result.get("error"))
+        result["metadata"]["translation_error"] = trans_result.get("error", "Unknown")
+
+    return result
+
+
 def run_pipeline(
     input_file: str,
     title: str | None = None,
@@ -82,12 +129,14 @@ def run_pipeline(
     full_slide_mode: bool = True,
     editable_mode: bool = True,
     notebooklm_mode: bool = False,
+    ocr_editable_mode: bool = False,
+    translate_to: str | None = None,
 ) -> dict:
     """
     Run the complete presentation generation pipeline.
 
     Args:
-        input_file: Path to PDF or DOCX file
+        input_file: Path to PDF, DOCX, TXT, MD, or PPTX file
         title: Optional title override
         language: Force "ES" or "EN" (auto-detected if None)
         slide_count: Target number of slides (4-15)
@@ -101,6 +150,8 @@ def run_pipeline(
         full_slide_mode: True = full-slide images (default), False = composite
         editable_mode: True = editable slides (default), overrides full_slide_mode
         notebooklm_mode: True = delegate to NotebookLM (best quality, requires auth)
+        ocr_editable_mode: True = NotebookLM + OCR → editable Recodme (best of both)
+        translate_to: Target language code for post-generation translation (e.g., "EN")
 
     Returns:
         dict with paths to generated files and metadata
@@ -157,14 +208,15 @@ def run_pipeline(
     result["metadata"]["page_count"] = content.page_count
 
     # ─── NotebookLM Mode: Delegate entirely ────────────────────
-    if notebooklm_mode:
+    if notebooklm_mode or ocr_editable_mode:
         if not input_file.lower().endswith(".pdf"):
             logger.error("NotebookLM mode requires PDF input. Got: %s", input_file)
             result["error"] = "NotebookLM mode only supports PDF files"
             return result
 
+        mode_label = "OCR+EDITABLE" if ocr_editable_mode else "NOTEBOOKLM"
         logger.info("=" * 60)
-        logger.info("NOTEBOOKLM MODE: Delegating to NotebookLM engine")
+        logger.info("%s MODE: Delegating to NotebookLM engine", mode_label)
         logger.info("=" * 60)
 
         from notebooklm_client import NotebookLMPipeline
@@ -190,26 +242,79 @@ def run_pipeline(
             language=lang,
         )
 
-        total_time = round(time.time() - start_time, 2)
-        result["timing"]["total"] = total_time
-
-        if downloaded and Path(downloaded).exists():
-            result["success"] = True
-            result["files"]["pptx"] = downloaded
-            result["metadata"]["title"] = title or content.filename
-            result["metadata"]["mode"] = "notebooklm"
-            result["metadata"]["total_slides"] = "N/A (NotebookLM)"
-
-            logger.info("=" * 60)
-            logger.info("COMPLETE (NotebookLM)")
-            logger.info("=" * 60)
-            logger.info("Title: %s", result["metadata"]["title"])
-            logger.info("Language: %s", lang)
-            logger.info("Time: %.1fs", total_time)
-            logger.info("PPTX: %s", downloaded)
-        else:
+        if not downloaded or not Path(downloaded).exists():
+            total_time = round(time.time() - start_time, 2)
+            result["timing"]["total"] = total_time
             result["error"] = "NotebookLM generation failed"
             logger.error("NotebookLM generation failed after %.1fs", total_time)
+            return result
+
+        # ── OCR+Editable: Convert NotebookLM image PPTX to editable ──
+        if ocr_editable_mode:
+            logger.info("=" * 60)
+            logger.info("OCR CONVERSION: Image PPTX → Editable Recodme")
+            logger.info("=" * 60)
+
+            from ocr_converter import convert_notebooklm_to_editable
+
+            editable_path = str(pptx_path).replace(".pptx", "_editable.pptx")
+            ocr_result = convert_notebooklm_to_editable(
+                input_pptx=downloaded,
+                output_pptx=editable_path,
+                api_key=gemini_api_key,
+                brand_path=brand_path,
+                model=model,
+            )
+
+            total_time = round(time.time() - start_time, 2)
+            result["timing"]["total"] = total_time
+
+            if ocr_result["success"]:
+                result["success"] = True
+                result["files"]["pptx"] = ocr_result["files"]["pptx"]
+                result["files"]["pptx_notebooklm"] = downloaded  # Keep original
+                result["files"]["specs_json"] = ocr_result["files"].get("specs_json", "")
+                result["metadata"]["title"] = ocr_result["metadata"].get("title", title or content.filename)
+                result["metadata"]["mode"] = "ocr_editable"
+                result["metadata"]["total_slides"] = ocr_result["metadata"].get("total_slides", "N/A")
+                result["timing"].update(ocr_result["timing"])
+
+                logger.info("=" * 60)
+                logger.info("COMPLETE (OCR+Editable)")
+                logger.info("=" * 60)
+                logger.info("Title: %s", result["metadata"]["title"])
+                logger.info("Slides: %s", result["metadata"]["total_slides"])
+                logger.info("Time: %.1fs", total_time)
+                logger.info("PPTX (editable): %s", editable_path)
+                logger.info("PPTX (original): %s", downloaded)
+            else:
+                result["error"] = f"OCR conversion failed: {ocr_result.get('error', 'Unknown')}"
+                logger.error("OCR conversion failed: %s", ocr_result.get("error"))
+
+            if translate_to and result["success"]:
+                result = _apply_translation(result, translate_to, lang, gemini_api_key, model, start_time)
+
+            return result
+
+        # Plain NotebookLM mode (no OCR)
+        total_time = round(time.time() - start_time, 2)
+        result["timing"]["total"] = total_time
+        result["success"] = True
+        result["files"]["pptx"] = downloaded
+        result["metadata"]["title"] = title or content.filename
+        result["metadata"]["mode"] = "notebooklm"
+        result["metadata"]["total_slides"] = "N/A (NotebookLM)"
+
+        logger.info("=" * 60)
+        logger.info("COMPLETE (NotebookLM)")
+        logger.info("=" * 60)
+        logger.info("Title: %s", result["metadata"]["title"])
+        logger.info("Language: %s", lang)
+        logger.info("Time: %.1fs", total_time)
+        logger.info("PPTX: %s", downloaded)
+
+        if translate_to and result["success"]:
+            result = _apply_translation(result, translate_to, lang, gemini_api_key, model, start_time)
 
         return result
 
@@ -380,6 +485,10 @@ def run_pipeline(
             status, slide.number, slide.type, words, img_label,
         )
 
+    # ─── Optional: Translation ───────────────────────────────
+    if translate_to and result["success"]:
+        result = _apply_translation(result, translate_to, lang, gemini_api_key, model, start_time)
+
     return result
 
 
@@ -394,13 +503,19 @@ Modes (mutually exclusive):
   --full-slide   Full-slide — each slide is a single AI image (non-editable)
   --composite    Composite — AI illustrations + pptx text layout (legacy)
   --notebooklm   NotebookLM — best visual quality (requires auth setup)
+  --ocr-editable OCR+Editable — NotebookLM quality + editable Recodme output
+
+Post-processing:
+  --translate-to CODE  Translate output PPTX (ES, EN, FR, DE, PT, IT)
 
 Examples:
   python presentation_factory.py document.pdf
   python presentation_factory.py document.pdf --slides 10 --language ES
-  python presentation_factory.py document.pdf --full-slide   # non-editable AI images
-  python presentation_factory.py document.pdf --notebooklm   # NotebookLM quality
-  python presentation_factory.py document.pdf --no-images    # gradient-only mode
+  python presentation_factory.py document.pdf --full-slide     # non-editable AI images
+  python presentation_factory.py document.pdf --notebooklm     # NotebookLM quality
+  python presentation_factory.py document.pdf --ocr-editable   # best of both worlds
+  python presentation_factory.py document.pdf --no-images      # gradient-only mode
+  python presentation_factory.py document.pdf --translate-to EN # generate + translate
         """,
     )
     parser.add_argument("input_file", help="Path to PDF or DOCX file")
@@ -423,6 +538,11 @@ Examples:
                             help="Use composite mode (AI illustrations + pptx text)")
     mode_group.add_argument("--notebooklm", action="store_true",
                             help="Use NotebookLM for generation (best quality, requires auth)")
+    mode_group.add_argument("--ocr-editable", action="store_true",
+                            help="NotebookLM quality + OCR → editable Recodme (best of both)")
+
+    parser.add_argument("--translate-to",
+                        help="Translate output PPTX to target language (ES, EN, FR, DE, PT, IT)")
 
     args = parser.parse_args()
 
@@ -430,9 +550,10 @@ Examples:
         print(f"Error: File not found: {args.input_file}")
         sys.exit(1)
 
-    # Determine mode: notebooklm > editable (default) > full-slide > composite
+    # Determine mode: ocr-editable > notebooklm > editable (default) > full-slide > composite
+    ocr_editable_mode = args.ocr_editable
     notebooklm_mode = args.notebooklm
-    editable_mode = not args.full_slide and not args.composite and not args.notebooklm
+    editable_mode = not args.full_slide and not args.composite and not args.notebooklm and not args.ocr_editable
     full_slide_mode = args.full_slide
 
     # Composite mode uses the old illustration model by default
@@ -454,6 +575,8 @@ Examples:
         full_slide_mode=full_slide_mode,
         editable_mode=editable_mode,
         notebooklm_mode=notebooklm_mode,
+        ocr_editable_mode=ocr_editable_mode,
+        translate_to=args.translate_to,
     )
 
     if not result["success"]:
