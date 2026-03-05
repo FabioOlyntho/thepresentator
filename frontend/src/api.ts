@@ -128,6 +128,47 @@ export function connectJobWs(
   return ws;
 }
 
+/* ─── NotebookLM Auth ─── */
+
+export async function nlmAuthStatus(): Promise<{ authenticated: boolean }> {
+  const { data } = await api.get<{ authenticated: boolean }>('/auth/notebooklm/status');
+  return data;
+}
+
+export async function nlmAuthStart(): Promise<{ screenshot: string }> {
+  const { data } = await api.post<{ screenshot: string }>('/auth/notebooklm/start');
+  return data;
+}
+
+export async function nlmAuthScreenshot(): Promise<{ screenshot: string }> {
+  const { data } = await api.get<{ screenshot: string }>('/auth/notebooklm/screenshot');
+  return data;
+}
+
+export async function nlmAuthClick(x: number, y: number): Promise<{ screenshot: string }> {
+  const { data } = await api.post<{ screenshot: string }>('/auth/notebooklm/click', { x, y });
+  return data;
+}
+
+export async function nlmAuthType(text: string): Promise<{ screenshot: string }> {
+  const { data } = await api.post<{ screenshot: string }>('/auth/notebooklm/type', { text });
+  return data;
+}
+
+export async function nlmAuthKey(key: string): Promise<{ screenshot: string }> {
+  const { data } = await api.post<{ screenshot: string }>('/auth/notebooklm/key', { key });
+  return data;
+}
+
+export async function nlmAuthComplete(): Promise<{ success: boolean; message: string }> {
+  const { data } = await api.post<{ success: boolean; message: string }>('/auth/notebooklm/complete');
+  return data;
+}
+
+export async function nlmAuthCancel(): Promise<void> {
+  await api.post('/auth/notebooklm/cancel');
+}
+
 /* ─── Health ─── */
 
 export async function healthCheck(): Promise<{ status: string }> {

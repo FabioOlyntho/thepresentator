@@ -1,6 +1,6 @@
 import { useState, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { createJob } from '../api';
+import { createJob, nlmAuthStatus } from '../api';
 import type { GenerationMode } from '../types';
 import FileDropzone from '../components/FileDropzone';
 import ModeSelector from '../components/ModeSelector';
@@ -8,6 +8,9 @@ import PdnobLevelSelector from '../components/PdnobLevelSelector';
 import PromptInput from '../components/PromptInput';
 import LanguagePicker from '../components/LanguagePicker';
 import BrandSelector from '../components/BrandSelector';
+import NlmAuthModal from '../components/NlmAuthModal';
+
+const NLM_MODES = new Set(['notebooklm', 'ocr_editable', 'full_slide', 'pdnob']);
 
 export default function Generate() {
   const navigate = useNavigate();
@@ -21,11 +24,26 @@ export default function Generate() {
   const [pdnobLevel, setPdnobLevel] = useState<'ocr_only' | 'remove_bg' | 'full'>('full');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
+  const [showAuth, setShowAuth] = useState(false);
 
   async function handleGenerate() {
     if (!file) return;
     setSubmitting(true);
     setError('');
+
+    // Check NLM auth for modes that need it
+    if (NLM_MODES.has(mode)) {
+      try {
+        const { authenticated } = await nlmAuthStatus();
+        if (!authenticated) {
+          setSubmitting(false);
+          setShowAuth(true);
+          return;
+        }
+      } catch {
+        // If auth check fails, proceed anyway (fallback will handle it)
+      }
+    }
 
     try {
       const options: Record<string, unknown> = {
@@ -125,6 +143,16 @@ export default function Generate() {
           'Generate Presentation'
         )}
       </button>
+
+      {showAuth && (
+        <NlmAuthModal
+          onSuccess={() => {
+            setShowAuth(false);
+            handleGenerate();
+          }}
+          onCancel={() => setShowAuth(false)}
+        />
+      )}
     </div>
   );
 }

@@ -6,13 +6,16 @@ Professional presentation generation from documents via Gemini AI.
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from backend.config import settings
 from backend.database import init_db
-from backend.routes import health, jobs, download, brands, ws
+from backend.routes import health, jobs, download, brands, ws, auth
 
 logging.basicConfig(
     level=logging.INFO,
@@ -56,6 +59,26 @@ app.include_router(jobs.router, prefix="/api/v1", tags=["jobs"])
 app.include_router(download.router, prefix="/api/v1", tags=["download"])
 app.include_router(brands.router, prefix="/api/v1", tags=["brands"])
 app.include_router(ws.router, prefix="/api/v1", tags=["websocket"])
+app.include_router(auth.router, prefix="/api/v1", tags=["auth"])
+
+
+# --- Static file serving (SPA) ---
+# Mount frontend/dist/ so FastAPI serves the React app in production.
+# API routes above take precedence over the catch-all.
+_frontend_dir = Path(__file__).parent.parent / "frontend" / "dist"
+if _frontend_dir.exists():
+    app.mount("/assets", StaticFiles(directory=str(_frontend_dir / "assets")), name="static-assets")
+
+    @app.get("/{path:path}")
+    async def spa_fallback(path: str):
+        """Serve index.html for all non-API routes (React SPA routing)."""
+        file_path = _frontend_dir / path
+        if file_path.is_file():
+            return FileResponse(str(file_path))
+        return FileResponse(
+            str(_frontend_dir / "index.html"),
+            headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+        )
 
 
 if __name__ == "__main__":

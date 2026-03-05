@@ -2,8 +2,8 @@
 Schemas — Pydantic models for API request/response validation.
 """
 
-from datetime import datetime
-from pydantic import BaseModel, Field
+from datetime import datetime, timezone
+from pydantic import BaseModel, Field, field_serializer
 
 
 # ─── Job Schemas ──────────────────────────────────────────────
@@ -51,6 +51,14 @@ class JobResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+    @field_serializer("created_at", "updated_at")
+    @classmethod
+    def serialize_dt(cls, v: datetime) -> str:
+        """Ensure UTC timestamps always include Z suffix for correct JS parsing."""
+        if v.tzinfo is None:
+            v = v.replace(tzinfo=timezone.utc)
+        return v.isoformat().replace("+00:00", "Z")
 
 
 class JobListResponse(BaseModel):

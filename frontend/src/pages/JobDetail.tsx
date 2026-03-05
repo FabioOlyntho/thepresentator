@@ -61,7 +61,11 @@ export default function JobDetail() {
       if (timerRef.current) clearInterval(timerRef.current);
       return;
     }
-    const start = new Date(job.created_at).getTime();
+    // Backend stores UTC but SQLite drops timezone — append Z to ensure UTC parsing
+    const createdStr = typeof job.created_at === 'string' && !job.created_at.endsWith('Z')
+      ? job.created_at + 'Z' : String(job.created_at);
+    const start = new Date(createdStr).getTime();
+    setElapsed(Math.floor((Date.now() - start) / 1000));
     timerRef.current = window.setInterval(() => {
       setElapsed(Math.floor((Date.now() - start) / 1000));
     }, 1000);

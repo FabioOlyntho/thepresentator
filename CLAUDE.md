@@ -59,6 +59,11 @@ presentation-factory/
 ├── config/
 │   ├── brand.json        # Default brand config (Recodme palette)
 │   └── template.pptx     # Base PPTX template
+├── deploy/               # Deployment automation
+│   ├── ssh_exec.py       # SSH/SCP helper (paramiko)
+│   ├── deploy.py         # 7-step deployment pipeline
+│   ├── traefik_config.py # Traefik routing config writer
+│   └── smoke_tests.py    # Post-deploy smoke tests
 ├── prompts/              # AI prompt templates
 ├── output/               # Generated presentations
 └── requirements.txt      # Python dependencies
@@ -125,9 +130,53 @@ cd frontend && npm run build
 4. Run full suite: `./venv/Scripts/python.exe -m pytest tests/ -v`
 5. Visual verification in PowerPoint for positioning changes
 
+## Production Deployment
+
+| Item | Value |
+|------|-------|
+| VPS | 82.25.117.157 (Hostinger, Ubuntu 24.04) |
+| URL | https://presentator.humanaie.com |
+| App dir | `/var/www/presentator` |
+| Venv | `/var/www/presentator/venv/` (Python 3.12) |
+| Port | 8001 (uvicorn, fork mode) |
+| PM2 | name `presentator`, cwd `/var/www/presentator` |
+| Traefik | `/etc/traefik/dynamic/presentator.yml` |
+| DB | SQLite at `/var/www/presentator/data/presentator.db` |
+| Frontend | Served by FastAPI (SPA fallback in `backend/main.py`) |
+
+### Deploy Commands
+
+```bash
+set VPS_PASSWORD=<password>
+
+# First-time setup (creates venv, .env, data dir)
+python deploy/deploy.py --first-deploy
+
+# Subsequent deploys
+python deploy/deploy.py
+
+# One-time Traefik config
+python deploy/traefik_config.py
+
+# Smoke tests
+python deploy/smoke_tests.py
+
+# SSH ad-hoc
+python deploy/ssh_exec.py "pm2 logs presentator --lines 20"
+```
+
+### Deploy Files
+
+| File | Purpose |
+|------|---------|
+| `deploy/ssh_exec.py` | SSH/SCP helper (paramiko, env-based creds) |
+| `deploy/deploy.py` | 7-step deployment pipeline (tarball+SCP+backup+extract+PM2+health check+rollback) |
+| `deploy/traefik_config.py` | Write Traefik routing config to VPS (one-time) |
+| `deploy/smoke_tests.py` | 9 post-deploy smoke tests |
+
 ## Post-Commit Checklist
 
-- [ ] All 140+ tests passing
+- [ ] All 143+ tests passing
 - [ ] Update CLAUDE.md if architecture changed
 - [ ] Update MEMORY.md with session notes
 - [ ] Visual check in PowerPoint for any slide generation changes

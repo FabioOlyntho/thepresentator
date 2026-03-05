@@ -133,6 +133,30 @@ async def run_generation(
             pdnob_level,
         )
 
+        # Auto-fallback: if NotebookLM/OCR-editable failed, retry with Editable mode
+        if not result.get("success") and mode in ("notebooklm", "ocr_editable"):
+            error_msg = result.get("error", "")
+            logger.warning("NotebookLM mode failed (%s) — falling back to Editable mode", error_msg)
+            report_progress(job_id, "generating", 20,
+                            "NotebookLM unavailable — generating with Editable mode instead...")
+            result = await loop.run_in_executor(
+                _executor,
+                _run_pipeline_sync,
+                job_id,
+                input_path,
+                "editable",
+                title,
+                language,
+                target_language,
+                slide_count,
+                prompt,
+                model,
+                brand_path,
+                output_dir,
+                ocr_engine,
+                pdnob_level,
+            )
+
         if result.get("success"):
             report_progress(job_id, "completed", 100,
                             f"Done! {result['metadata'].get('total_slides', '?')} slides in {result['timing'].get('total', 0):.1f}s")
