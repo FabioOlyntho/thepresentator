@@ -150,11 +150,13 @@ class NlmAuthSession:
                 elif c["name"] == "SID":
                     session_id = c["value"]
 
+            from datetime import datetime, timezone
             metadata = {
                 "csrf_token": csrf_token,
                 "session_id": session_id,
                 "build_label": "",
                 "updated_at": time.time(),
+                "last_validated": datetime.now(timezone.utc).isoformat(),
             }
             metadata_path = profile_dir / "metadata.json"
             metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
@@ -220,12 +222,77 @@ async def close_session():
 
 
 def check_nlm_auth() -> bool:
-    """Check if NotebookLM auth credentials exist and look valid."""
+    """Quick file-existence check (used as fallback only)."""
     try:
         from notebooklm_tools.core.auth import AuthManager
         manager = AuthManager("default")
         return manager.profile_exists()
-    except ImportError:
-        return False
     except Exception:
         return False
+
+
+async def validate_nlm_auth() -> bool:
+    """Actually validate NotebookLM cookies by making a lightweight HTTP request.
+
+    Returns True only if the cookies produce an authenticated session.
+    This prevents false positives from expired cookies sitting on disk.
+    """
+    import json as _json
+
+    profile_dir = Path.home() / ".notebooklm-mcp-cli" / "profiles" / "default"
+    cookies_path = profile_dir / "cookies.json"
+
+    if not cookies_path.exists():
+        logger.info("NLM Auth validate: no cookies file found")
+        return False
+
+    try:
+        cookie_data = _json.loads(cookies_path.read_text(encoding="utf-8"))
+    except Exception:
+        logger.warning("NLM Auth validate: failed to read cookies file")
+        return False
+
+    if not cookie_data:
+        return False
+
+    # Build cookie header from stored cookies
+    cookie_header = "; ".join(
+        f"{c['name']}={c['value']}" for c in cookie_data
+        if isinstance(c, dict) and "name" in c and "value" in c
+    )
+
+    try:
+        import httpx
+
+        async with httpx.AsyncClient(
+            follow_redirects=False,
+            timeout=8.0,
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/131.0.0.0 Safari/537.36"
+                ),
+                "Cookie": cookie_header,
+            },
+        ) as client:
+            resp = await client.get("https://notebooklm.google.com/")
+
+        # 200 = authenticated, 302 to accounts.google.com = expired
+        if resp.status_code == 200:
+            logger.info("NLM Auth validate: cookies valid (200)")
+            return True
+
+        location = resp.headers.get("location", "")
+        if "accounts.google.com" in location:
+            logger.info("NLM Auth validate: cookies expired (redirect to login)")
+            return False
+
+        # Any other status — treat as invalid
+        logger.warning("NLM Auth validate: unexpected status %d", resp.status_code)
+        return False
+
+    except Exception as e:
+        logger.warning("NLM Auth validate: HTTP check failed: %s", e)
+        # Network error — fall back to file check
+        return check_nlm_auth()

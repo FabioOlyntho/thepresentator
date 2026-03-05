@@ -18,10 +18,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from backend.services.nlm_auth_service import (
-    check_nlm_auth,
     close_session,
     get_session,
     start_session,
+    validate_nlm_auth,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,8 +56,9 @@ class SaveResult(BaseModel):
 
 @router.get("/notebooklm/status", response_model=AuthStatus)
 async def nlm_auth_status():
-    """Check if NotebookLM auth credentials exist."""
-    return AuthStatus(authenticated=check_nlm_auth())
+    """Check if NotebookLM auth cookies are actually valid (live HTTP check)."""
+    authenticated = await validate_nlm_auth()
+    return AuthStatus(authenticated=authenticated)
 
 
 @router.post("/notebooklm/start", response_model=ScreenshotResponse)
