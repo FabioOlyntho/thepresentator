@@ -1,5 +1,5 @@
 """
-Test Suite — OCR Converter: NotebookLM image PPTX → editable Recodme PPTX.
+Test Suite — OCR Converter: NotebookLM image PPTX → hybrid editable PPTX.
 
 Run: python -m pytest tests/test_ocr_converter.py -v
 """
@@ -313,10 +313,10 @@ def test_convert_pipeline_mock(mock_post):
         prs = Presentation(output_pptx)
         assert len(prs.slides) == 3, f"Expected 3 slides, got {len(prs.slides)}"
 
-        # Verify NO picture shapes (editable mode = solid fills)
+        # Verify picture shapes are present (hybrid mode preserves images as backgrounds)
         for slide in prs.slides:
             has_picture = any(s.shape_type == 13 for s in slide.shapes)
-            assert not has_picture, "Editable output should not have picture shapes"
+            assert has_picture, "Hybrid output should have picture shapes (image backgrounds)"
 
         # Verify specs JSON was saved
         assert Path(result["files"]["specs_json"]).exists()
@@ -327,7 +327,7 @@ def test_convert_pipeline_mock(mock_post):
     finally:
         Path(pptx_path).unlink()
 
-    print("  [PASS] Full mock conversion pipeline (3 slides)")
+    print("  [PASS] Full mock conversion pipeline (3 slides, hybrid mode)")
 
 
 @patch("ocr_converter.requests.post")
@@ -613,10 +613,10 @@ def test_convert_pipeline_docling_mock(mock_docling):
         prs = Presentation(output_pptx)
         assert len(prs.slides) == 3
 
-        # Verify NO picture shapes (editable mode)
+        # Verify picture shapes are present (hybrid mode preserves images as backgrounds)
         for slide in prs.slides:
             has_picture = any(s.shape_type == 13 for s in slide.shapes)
-            assert not has_picture, "Editable output should not have picture shapes"
+            assert has_picture, "Hybrid output should have picture shapes (image backgrounds)"
 
         Path(output_pptx).unlink(missing_ok=True)
         Path(result["files"]["specs_json"]).unlink(missing_ok=True)

@@ -1,16 +1,18 @@
 """
 Slide Builder — Creates professional PPTX presentations.
 
-Three modes:
-- Editable (default): Programmatic Recodme layouts — solid fills, accent bars,
-  proper typography. No AI images needed; instant generation.
+Four modes:
+- Editable (default): Programmatic modern dark layouts — gradient fills, accent bars,
+  glassmorphism cards, modern typography. No AI images needed; instant generation.
+- Hybrid: NotebookLM image as background + editable text overlay (OCR mode)
 - Full-slide: Each slide is a single AI-rendered image (NotebookLM approach)
 - Composite: AI illustrations + python-pptx text layout (legacy)
 
 Generates presentations using python-pptx with:
-- Programmatic Recodme brand layouts (editable mode)
+- Programmatic modern brand layouts (editable mode)
+- NotebookLM image backgrounds with text overlays (hybrid mode)
 - AI-generated full-slide images (full-slide mode)
-- Editable text boxes with Poppins typography
+- Editable text boxes with Outfit/DM Sans typography
 - Speaker notes
 - 16:9 widescreen format
 """
@@ -73,16 +75,16 @@ class BrandConfig:
     @classmethod
     def default(cls) -> "BrandConfig":
         return cls(
-            primary=RGBColor(0xE8, 0x44, 0x22),
-            secondary=RGBColor(0xC2, 0xBF, 0xAA),
-            background=RGBColor(0xF5, 0xF0, 0xE8),
-            accent=RGBColor(0x01, 0x26, 0x2D),
-            text_dark=RGBColor(0x31, 0x31, 0x31),
-            text_light=RGBColor(0xFF, 0xFF, 0xFF),
-            highlight=RGBColor(0xE8, 0x44, 0x22),
-            font_title="Poppins SemiBold",
-            font_body="Poppins Medium",
-            font_accent="Poppins Light",
+            primary=RGBColor(0x06, 0xB6, 0xD4),
+            secondary=RGBColor(0x8B, 0x5C, 0xF6),
+            background=RGBColor(0x0F, 0x14, 0x19),
+            accent=RGBColor(0x06, 0xB6, 0xD4),
+            text_dark=RGBColor(0x0F, 0x14, 0x19),
+            text_light=RGBColor(0xF1, 0xF5, 0xF9),
+            highlight=RGBColor(0x8B, 0x5C, 0xF6),
+            font_title="Outfit SemiBold",
+            font_body="DM Sans",
+            font_accent="DM Sans Medium",
         )
 
 
@@ -101,8 +103,8 @@ class SlideBuilder:
     """Builds PPTX presentations with AI-generated images and modern design.
 
     Three modes:
-    - editable_mode=True (new default): AI background image + editable text boxes.
-      Text is selectable/editable in PowerPoint with Recodme brand fonts.
+    - editable_mode=True (new default): Modern dark design with editable text boxes.
+      Text is selectable/editable in PowerPoint with modern brand fonts.
     - full_slide_mode=True: Each slide is a single full-bleed image with only
       speaker notes as editable text.
     - full_slide_mode=False: Composite mode with AI illustrations + python-pptx
@@ -119,11 +121,13 @@ class SlideBuilder:
         image_paths: dict[int, str | None] | None = None,
         full_slide_mode: bool = True,
         editable_mode: bool = False,
+        hybrid_mode: bool = False,
     ):
         self.brand = brand or BrandConfig.default()
         self.image_paths = image_paths or {}
         self.full_slide_mode = full_slide_mode
         self.editable_mode = editable_mode
+        self.hybrid_mode = hybrid_mode
         self.prs = Presentation()
         self.prs.slide_width = self.SLIDE_WIDTH
         self.prs.slide_height = self.SLIDE_HEIGHT
@@ -382,8 +386,10 @@ class SlideBuilder:
             self._set_shape_alpha(shape, opacity_pct)
         return shape
 
-    def _add_watermark(self, slide, text="Recodme", color=None):
-        """Add a small watermark in the bottom-right corner."""
+    def _add_watermark(self, slide, text="", color=None):
+        """Add a small watermark in the bottom-right corner (disabled by default)."""
+        if not text:
+            return
         self._add_text_box(
             slide, Inches(11.5), Inches(7.0),
             Inches(1.5), Inches(0.3),
@@ -441,26 +447,17 @@ class SlideBuilder:
         return shape
 
     def _add_footer_bar(self, slide, slide_number=None, dark_bg=False):
-        """Consistent footer across all slides (except title)."""
-        line_color = RGBColor(0xC2, 0xBF, 0xAA) if not dark_bg else RGBColor(0x4A, 0x5A, 0x5E)
-        num_color = RGBColor(0x99, 0x99, 0x99) if not dark_bg else RGBColor(0x88, 0x99, 0x99)
-        wm_color = self.brand.secondary if not dark_bg else RGBColor(0x4A, 0x5A, 0x5E)
+        """Minimal footer — just subtle line + slide number in muted gray."""
+        line_color = RGBColor(0x2D, 0x37, 0x48) if dark_bg else RGBColor(0x33, 0x3D, 0x4D)
+        num_color = RGBColor(0x4A, 0x55, 0x68) if dark_bg else RGBColor(0x64, 0x74, 0x8B)
 
-        # Horizontal line
-        line = self._add_divider_line(
-            slide, Inches(0.8), Inches(7.0), Inches(11.7), Inches(0.01),
+        # Subtle horizontal line
+        self._add_divider_line(
+            slide, Inches(1.0), Inches(7.05), Inches(11.333), Inches(0.01),
             color=line_color, opacity_pct=30,
         )
 
-        # Watermark
-        self._add_text_box(
-            slide, Inches(11.0), Inches(7.1),
-            Inches(1.5), Inches(0.3),
-            "Recodme", 10, self.brand.font_accent,
-            wm_color, alignment=PP_ALIGN.RIGHT,
-        )
-
-        # Slide number
+        # Slide number only (no watermark)
         if slide_number is not None:
             self._add_text_box(
                 slide, Inches(12.3), Inches(7.1),
@@ -953,7 +950,152 @@ class SlideBuilder:
         self._add_speaker_notes(slide, spec.speaker_notes)
 
     # ═══════════════════════════════════════════════════════════════
-    # EDITABLE MODE — Programmatic Recodme layouts (no AI images)
+    # HYBRID MODE — NotebookLM image as background + editable text
+    # ═══════════════════════════════════════════════════════════════
+
+    def _build_hybrid_slide(self, spec) -> None:
+        """
+        Build a hybrid slide: NotebookLM image as background + editable text overlay.
+
+        The original NotebookLM visual is preserved as a full-bleed background image,
+        with a semi-transparent overlay panel for readability and editable text boxes
+        placed on top for searchability and editing.
+        """
+        slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])  # Blank
+        image_path = self._get_image(spec.number)
+
+        if image_path:
+            # Full-bleed NotebookLM image as background
+            self._add_full_bleed_image(slide, image_path)
+        else:
+            # Fallback: dark gradient when no image available
+            self._set_gradient_bg(slide, RGBColor(0x0F, 0x14, 0x19), RGBColor(0x0A, 0x0A, 0x1A))
+
+        # Layout varies by slide type
+        slide_type = spec.type or "content"
+
+        if slide_type == "title":
+            self._build_hybrid_title(slide, spec, has_image=bool(image_path))
+        elif slide_type == "section":
+            self._build_hybrid_section(slide, spec, has_image=bool(image_path))
+        else:
+            self._build_hybrid_content(slide, spec, has_image=bool(image_path))
+
+        self._add_speaker_notes(slide, spec.speaker_notes)
+
+    def _build_hybrid_title(self, slide, spec, has_image: bool) -> None:
+        """Hybrid title: gradient overlay at bottom + large title + subtitle."""
+        if has_image:
+            # Gradient overlay: transparent top → dark bottom for text readability
+            self._add_gradient_overlay(
+                slide, Inches(0), Inches(0),
+                self.SLIDE_WIDTH, self.SLIDE_HEIGHT, "bottom",
+            )
+
+        # Title — large, bold, white, bottom-left
+        self._add_text_box(
+            slide, Inches(1.0), Inches(4.0),
+            Inches(10.5), Inches(2.0),
+            spec.title, 42, self.brand.font_title,
+            self.brand.text_light, bold=True,
+            anchor=MSO_ANCHOR.BOTTOM,
+            line_spacing=50,
+        )
+
+        # Subtitle
+        if spec.subtitle:
+            self._add_text_box(
+                slide, Inches(1.0), Inches(6.2),
+                Inches(10.5), Inches(0.8),
+                spec.subtitle, 20, self.brand.font_accent,
+                RGBColor(0xCC, 0xCC, 0xDD),
+            )
+
+    def _build_hybrid_section(self, slide, spec, has_image: bool) -> None:
+        """Hybrid section: centered dark overlay + large centered title."""
+        if has_image:
+            self._add_dark_overlay(
+                slide, Inches(0), Inches(0),
+                self.SLIDE_WIDTH, self.SLIDE_HEIGHT, opacity_pct=50,
+            )
+
+        # Section title — large, centered
+        self._add_text_box(
+            slide, Inches(1.5), Inches(2.0),
+            Inches(10.333), Inches(3.0),
+            spec.title, 40, self.brand.font_title,
+            self.brand.text_light, bold=True,
+            alignment=PP_ALIGN.CENTER,
+            anchor=MSO_ANCHOR.MIDDLE,
+            line_spacing=48,
+        )
+
+        # Optional body text
+        if spec.body:
+            self._add_text_box(
+                slide, Inches(2.0), Inches(5.0),
+                Inches(9.333), Inches(1.5),
+                spec.body, 18, self.brand.font_body,
+                RGBColor(0xDD, 0xDD, 0xEE),
+                alignment=PP_ALIGN.CENTER,
+            )
+
+    def _build_hybrid_content(self, slide, spec, has_image: bool) -> None:
+        """Hybrid content: semi-transparent panel at bottom + title + bullets."""
+        if has_image:
+            # Semi-transparent dark panel covering bottom 65% for text
+            self._add_colored_overlay(
+                slide, Inches(0), Inches(2.6),
+                self.SLIDE_WIDTH, Inches(4.9),
+                RGBColor(0x0A, 0x0A, 0x1A), opacity_pct=70,
+            )
+
+        # Title in top-left with subtle background
+        title_top = Inches(2.8)
+        self._add_text_box(
+            slide, Inches(1.0), title_top,
+            Inches(11.0), Inches(1.2),
+            spec.title, 26, self.brand.font_title,
+            self.brand.text_light, bold=True,
+            line_spacing=32,
+        )
+
+        # Accent line under title
+        accent = slide.shapes.add_shape(
+            MSO_SHAPE.RECTANGLE, Inches(1.0), Inches(4.1),
+            Inches(1.5), Inches(0.04),
+        )
+        accent.fill.solid()
+        accent.fill.fore_color.rgb = self.brand.primary
+        accent.line.fill.background()
+
+        # Body text
+        content_top = Inches(4.4)
+        if spec.body:
+            self._add_text_box(
+                slide, Inches(1.0), content_top,
+                Inches(11.0), Inches(1.0),
+                spec.body, 15, self.brand.font_body,
+                RGBColor(0xCC, 0xCC, 0xDD),
+                line_spacing=22,
+            )
+            content_top = Inches(5.4)
+
+        # Bullet points
+        if spec.bullet_points:
+            self._add_bullet_list(
+                slide, Inches(1.0), content_top,
+                Inches(11.0), Inches(2.0),
+                spec.bullet_points, 15, self.brand.font_body,
+                RGBColor(0xDD, 0xDD, 0xEE),
+                line_spacing=22,
+            )
+
+        # Slide number
+        self._add_slide_number(slide, spec.number, RGBColor(0x88, 0x88, 0x99))
+
+    # ═══════════════════════════════════════════════════════════════
+    # EDITABLE MODE — Programmatic modern layouts (no AI images)
     # ═══════════════════════════════════════════════════════════════
 
     def _add_checkbox_list(
@@ -992,111 +1134,97 @@ class SlideBuilder:
 
         return txBox
 
-    # ── Seven Recodme Layout Builders ─────────────────────────────
+    # ── Seven Modern Layout Builders ──────────────────────────────
 
     def _build_recodme_title(self, spec) -> None:
-        """Title slide: Cream bg + teal bottom panel + structured layout."""
+        """Title slide: Dark gradient bg + large display font + gradient accent line."""
         slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])
-        self._set_slide_bg(slide, self.brand.background)
+        self._set_gradient_bg(slide, self.brand.background, RGBColor(0x0A, 0x0A, 0x1A))
 
-        # Red accent bar at very top
-        self._add_accent_bar(slide, Inches(0), Inches(0), self.SLIDE_WIDTH, Inches(0.06))
+        # Thin gradient accent bar at top
+        self._add_accent_bar(slide, Inches(0), Inches(0), self.SLIDE_WIDTH, Inches(0.05),
+                             color=self.brand.primary)
 
-        # Title — large, left-aligned
+        # Title — large, left-aligned, white
         self._add_text_box(
-            slide, Inches(1.2), Inches(1.8),
-            Inches(10.5), Inches(2.5),
-            spec.title, 36, self.brand.font_title,
-            self.brand.text_dark, bold=True,
+            slide, Inches(1.5), Inches(2.0),
+            Inches(10.0), Inches(2.5),
+            spec.title, 40, self.brand.font_title,
+            self.brand.text_light, bold=True,
             anchor=MSO_ANCHOR.BOTTOM,
+            line_spacing=48,
         )
 
-        # Red separator line below title
-        self._add_accent_bar(slide, Inches(1.2), Inches(4.5), Inches(2.0), Inches(0.04))
+        # Gradient accent line below title (cyan)
+        self._add_accent_bar(slide, Inches(1.5), Inches(4.8), Inches(3.0), Inches(0.05),
+                             color=self.brand.primary)
 
-        # Teal bottom panel
-        teal_panel = slide.shapes.add_shape(
-            MSO_SHAPE.RECTANGLE,
-            Inches(0), Inches(5.5), self.SLIDE_WIDTH, Inches(2.0),
-        )
-        teal_panel.fill.solid()
-        teal_panel.fill.fore_color.rgb = self.brand.accent
-        teal_panel.line.fill.background()
-
-        # Small red dash on panel edge
-        self._add_accent_bar(slide, Inches(1.2), Inches(5.55), Inches(0.4), Inches(0.03))
-
-        # Subtitle on teal panel — white
+        # Subtitle — muted gray
         if spec.subtitle:
             self._add_text_box(
-                slide, Inches(1.2), Inches(5.8),
-                Inches(10.5), Inches(0.8),
-                spec.subtitle, 18, self.brand.font_body,
-                self.brand.text_light,
+                slide, Inches(1.5), Inches(5.2),
+                Inches(10.0), Inches(0.8),
+                spec.subtitle, 20, self.brand.font_body,
+                RGBColor(0x94, 0xA3, 0xB8),
             )
 
-        # Watermark on teal panel
-        self._add_text_box(
-            slide, Inches(11.0), Inches(7.0),
-            Inches(1.5), Inches(0.3),
-            "Recodme", 10, self.brand.font_accent,
-            RGBColor(0x4A, 0x5A, 0x5E),
-            alignment=PP_ALIGN.RIGHT,
-        )
+        # Minimal slide number
+        self._add_slide_number(slide, spec.number, RGBColor(0x4A, 0x55, 0x68))
 
         self._add_speaker_notes(slide, spec.speaker_notes)
 
     def _build_recodme_content(self, spec) -> None:
-        """Content slide: Numbered items with rich formatting."""
+        """Content slide: Dark bg + thin vertical accent + clean bullet list."""
         slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])
-        self._set_slide_bg(slide, self.brand.background)
+        self._set_gradient_bg(slide, self.brand.background, RGBColor(0x12, 0x17, 0x1E))
 
-        # Teal top bar
-        self._add_accent_bar(slide, Inches(0), Inches(0), self.SLIDE_WIDTH, Inches(0.04), color=self.brand.accent)
+        # Thin accent bar at top
+        self._add_accent_bar(slide, Inches(0), Inches(0), self.SLIDE_WIDTH, Inches(0.03),
+                             color=self.brand.primary)
 
-        # Title
+        # Title — white on dark
         self._add_text_box(
-            slide, Inches(1.0), Inches(0.4),
+            slide, Inches(1.2), Inches(0.5),
             Inches(11.0), Inches(1.2),
             spec.title, 26, self.brand.font_title,
-            self.brand.text_dark, bold=True,
+            self.brand.text_light, bold=True,
         )
 
-        # Red accent under title
-        self._add_accent_bar(slide, Inches(1.0), Inches(1.6), Inches(1.5), Inches(0.04))
+        # Cyan accent under title
+        self._add_accent_bar(slide, Inches(1.2), Inches(1.7), Inches(1.5), Inches(0.04),
+                             color=self.brand.primary)
 
-        # Body text — lighter gray
-        bullet_top = Inches(2.0)
+        # Body text — muted gray
+        bullet_top = Inches(2.1)
         if spec.body:
             self._add_text_box(
-                slide, Inches(1.0), Inches(1.9),
+                slide, Inches(1.2), Inches(2.0),
                 Inches(10.5), Inches(1.0),
                 spec.body, 14, self.brand.font_body,
-                RGBColor(0x66, 0x66, 0x66),
+                RGBColor(0x94, 0xA3, 0xB8),
             )
-            bullet_top = Inches(3.0)
+            bullet_top = Inches(3.1)
 
         # Numbered bullet items
         if spec.bullet_points:
             items = spec.bullet_points
             if len(items) > 5:
-                # Two-column layout for many items
                 half = (len(items) + 1) // 2
                 left_items = items[:half]
                 right_items = items[half:]
 
-                # Vertical divider
+                # Vertical divider (subtle)
                 self._add_divider_line(
                     slide, Inches(6.6), bullet_top, Inches(0.02), Inches(3.8),
-                    color=self.brand.secondary, opacity_pct=30,
+                    color=RGBColor(0x33, 0x3D, 0x4D), opacity_pct=50,
                 )
 
-                self._build_numbered_items(slide, Inches(1.0), bullet_top, Inches(5.3), left_items, 0)
-                self._build_numbered_items(slide, Inches(7.0), bullet_top, Inches(5.3), right_items, half)
+                self._build_numbered_items(slide, Inches(1.2), bullet_top, Inches(5.1), left_items, 0)
+                self._build_numbered_items(slide, Inches(7.0), bullet_top, Inches(5.1), right_items, half)
             else:
-                self._build_numbered_items(slide, Inches(1.0), bullet_top, Inches(11.0), items, 0)
+                self._build_numbered_items(slide, Inches(1.2), bullet_top, Inches(11.0), items, 0)
 
-        self._add_footer_bar(slide, slide_number=spec.number)
+        self._add_footer_bar(slide, slide_number=spec.number, dark_bg=True)
         self._add_speaker_notes(slide, spec.speaker_notes)
 
     def _build_numbered_items(self, slide, left, top, width, items, start_index):
@@ -1127,57 +1255,39 @@ class SlideBuilder:
                 kw_run.text = keyword
                 kw_run.font.size = Pt(14)
                 kw_run.font.name = self.brand.font_body
-                kw_run.font.color.rgb = self.brand.accent
+                kw_run.font.color.rgb = self.brand.primary
                 kw_run.font.bold = True
                 sep_run = p.add_run()
                 sep_run.text = " \u2014 "
                 sep_run.font.size = Pt(14)
                 sep_run.font.name = self.brand.font_body
-                sep_run.font.color.rgb = self.brand.text_dark
+                sep_run.font.color.rgb = RGBColor(0x94, 0xA3, 0xB8)
                 desc_run = p.add_run()
                 desc_run.text = description
                 desc_run.font.size = Pt(14)
                 desc_run.font.name = self.brand.font_body
-                desc_run.font.color.rgb = self.brand.text_dark
+                desc_run.font.color.rgb = self.brand.text_light
             else:
                 run = p.add_run()
                 run.text = item
                 run.font.size = Pt(14)
                 run.font.name = self.brand.font_body
-                run.font.color.rgb = self.brand.text_dark
+                run.font.color.rgb = self.brand.text_light
 
             # Separator line (except last item)
             if i < len(items) - 1:
                 sep_y = y + item_height + Inches(0.05)
                 self._add_divider_line(
                     slide, text_left, sep_y, text_width, Inches(0.01),
-                    color=RGBColor(0xE0, 0xDD, 0xD5), opacity_pct=100,
+                    color=RGBColor(0x2D, 0x37, 0x48), opacity_pct=100,
                 )
 
             y += spacing
 
     def _build_recodme_section(self, spec) -> None:
-        """Section divider: Dark teal bg + corner accent blocks."""
+        """Section divider: Full gradient bg (cyan→purple) + centered text."""
         slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])
-        self._set_slide_bg(slide, self.brand.accent)  # Dark teal #01262D
-
-        # Top-left red corner block
-        corner_tl = slide.shapes.add_shape(
-            MSO_SHAPE.RECTANGLE,
-            Inches(0), Inches(0), Inches(0.25), Inches(1.8),
-        )
-        corner_tl.fill.solid()
-        corner_tl.fill.fore_color.rgb = self.brand.primary
-        corner_tl.line.fill.background()
-
-        # Bottom-right red corner block
-        corner_br = slide.shapes.add_shape(
-            MSO_SHAPE.RECTANGLE,
-            Inches(13.083), Inches(5.7), Inches(0.25), Inches(1.8),
-        )
-        corner_br.fill.solid()
-        corner_br.fill.fore_color.rgb = self.brand.primary
-        corner_br.line.fill.background()
+        self._set_gradient_bg(slide, self.brand.primary, self.brand.secondary)
 
         # Title — large, centered, white
         self._add_text_box(
@@ -1186,59 +1296,50 @@ class SlideBuilder:
             spec.title, 38, self.brand.font_title,
             self.brand.text_light, bold=True,
             alignment=PP_ALIGN.CENTER,
+            line_spacing=46,
         )
 
-        # Centered red accent bar
+        # Centered white accent bar
         self._add_accent_bar(
-            slide, Inches(5.5), Inches(4.5), Inches(2.333), Inches(0.05),
+            slide, Inches(5.5), Inches(4.6), Inches(2.333), Inches(0.04),
+            color=RGBColor(0xFF, 0xFF, 0xFF),
         )
 
         # Body text below bar
         if spec.body:
             self._add_text_box(
-                slide, Inches(2.0), Inches(5.0),
+                slide, Inches(2.0), Inches(5.1),
                 Inches(9.333), Inches(1.0),
                 spec.body, 16, self.brand.font_body,
-                self.brand.secondary,
+                RGBColor(0xE2, 0xE8, 0xF0),
                 alignment=PP_ALIGN.CENTER,
             )
 
-        # Slide number + watermark
-        self._add_text_box(
-            slide, Inches(12.3), Inches(0.3),
-            Inches(0.8), Inches(0.3),
-            str(spec.number), 11, self.brand.font_accent,
-            RGBColor(0x4A, 0x5A, 0x5E),
-            alignment=PP_ALIGN.RIGHT,
-        )
-        self._add_text_box(
-            slide, Inches(11.0), Inches(7.0),
-            Inches(1.5), Inches(0.3),
-            "Recodme", 10, self.brand.font_accent,
-            RGBColor(0x4A, 0x5A, 0x5E),
-            alignment=PP_ALIGN.RIGHT,
-        )
+        # Slide number — muted
+        self._add_slide_number(slide, spec.number, RGBColor(0xCC, 0xCC, 0xDD))
 
         self._add_speaker_notes(slide, spec.speaker_notes)
 
     def _build_recodme_comparison(self, spec) -> None:
-        """Comparison slide: Column headers in teal bars + rich bullet lists."""
+        """Comparison slide: Two glassmorphism cards side-by-side on dark bg."""
         slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])
-        self._set_slide_bg(slide, self.brand.background)
+        self._set_gradient_bg(slide, self.brand.background, RGBColor(0x12, 0x17, 0x1E))
 
-        # Teal top bar
-        self._add_accent_bar(slide, Inches(0), Inches(0), self.SLIDE_WIDTH, Inches(0.04), color=self.brand.accent)
+        # Accent bar at top
+        self._add_accent_bar(slide, Inches(0), Inches(0), self.SLIDE_WIDTH, Inches(0.03),
+                             color=self.brand.primary)
 
         # Title
         self._add_text_box(
-            slide, Inches(0.8), Inches(0.4),
+            slide, Inches(1.0), Inches(0.5),
             Inches(11.5), Inches(1.2),
             spec.title, 26, self.brand.font_title,
-            self.brand.text_dark, bold=True,
+            self.brand.text_light, bold=True,
         )
 
-        # Red accent bar
-        self._add_accent_bar(slide, Inches(0.8), Inches(1.6), Inches(2.0), Inches(0.04))
+        # Cyan accent bar
+        self._add_accent_bar(slide, Inches(1.0), Inches(1.7), Inches(2.0), Inches(0.04),
+                             color=self.brand.primary)
 
         # Determine column content
         left_items = spec.left_column if spec.left_column else []
@@ -1252,92 +1353,100 @@ class SlideBuilder:
             left_items = spec.bullet_points[:half] or spec.bullet_points
             right_items = spec.bullet_points[half:]
 
-        # Left header bar — rounded rect with teal fill
+        # Left glassmorphism card
+        left_card = self._add_colored_overlay(
+            slide, Inches(0.8), Inches(2.2), Inches(5.5), Inches(4.8),
+            RGBColor(0x1E, 0x29, 0x3B), opacity_pct=80,
+        )
+
+        # Right glassmorphism card
+        right_card = self._add_colored_overlay(
+            slide, Inches(7.0), Inches(2.2), Inches(5.5), Inches(4.8),
+            RGBColor(0x1E, 0x29, 0x3B), opacity_pct=80,
+        )
+
+        # Left header text
         if left_hdr:
-            left_bar = self._add_content_card(
-                slide, Inches(0.8), Inches(2.0), Inches(5.5), Inches(0.45),
-                fill_color=self.brand.accent,
-            )
             self._add_text_box(
-                slide, Inches(0.8), Inches(2.0),
-                Inches(5.5), Inches(0.45),
+                slide, Inches(1.0), Inches(2.3),
+                Inches(5.3), Inches(0.45),
                 left_hdr, 15, self.brand.font_title,
-                self.brand.text_light, bold=True,
+                self.brand.primary, bold=True,
                 alignment=PP_ALIGN.CENTER,
                 anchor=MSO_ANCHOR.MIDDLE,
             )
 
-        # Right header bar — rounded rect with teal fill
+        # Right header text
         if right_hdr:
-            right_bar = self._add_content_card(
-                slide, Inches(7.0), Inches(2.0), Inches(5.5), Inches(0.45),
-                fill_color=self.brand.accent,
-            )
             self._add_text_box(
-                slide, Inches(7.0), Inches(2.0),
-                Inches(5.5), Inches(0.45),
+                slide, Inches(7.2), Inches(2.3),
+                Inches(5.3), Inches(0.45),
                 right_hdr, 15, self.brand.font_title,
-                self.brand.text_light, bold=True,
+                self.brand.secondary, bold=True,
                 alignment=PP_ALIGN.CENTER,
                 anchor=MSO_ANCHOR.MIDDLE,
             )
 
-        # Vertical divider
+        # Vertical divider (subtle)
         self._add_divider_line(
-            slide, Inches(6.5), Inches(2.0), Inches(0.03), Inches(4.5),
-            color=self.brand.secondary, opacity_pct=30,
+            slide, Inches(6.55), Inches(2.4), Inches(0.02), Inches(4.4),
+            color=RGBColor(0x33, 0x3D, 0x4D), opacity_pct=50,
         )
 
         # Left column — rich bullet list
         if left_items:
             self._add_rich_bullet_list(
-                slide, Inches(0.8), Inches(2.7),
-                Inches(5.5), Inches(3.8),
+                slide, Inches(1.0), Inches(3.0),
+                Inches(5.3), Inches(3.8),
                 left_items, 14, self.brand.font_body,
-                self.brand.text_dark,
+                self.brand.text_light,
+                bold_color=self.brand.primary,
             )
 
         # Right column — rich bullet list
         if right_items:
             self._add_rich_bullet_list(
-                slide, Inches(7.0), Inches(2.7),
-                Inches(5.5), Inches(3.8),
+                slide, Inches(7.2), Inches(3.0),
+                Inches(5.3), Inches(3.8),
                 right_items, 14, self.brand.font_body,
-                self.brand.text_dark,
+                self.brand.text_light,
+                bold_color=self.brand.secondary,
             )
 
-        self._add_footer_bar(slide, slide_number=spec.number)
+        self._add_footer_bar(slide, slide_number=spec.number, dark_bg=True)
         self._add_speaker_notes(slide, spec.speaker_notes)
 
     def _build_recodme_data(self, spec) -> None:
-        """Data/stats slide: Better stat card + numbered supporting points."""
+        """Data/stats slide: Large stat in gradient text + supporting points below."""
         slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])
-        self._set_slide_bg(slide, self.brand.background)
+        self._set_gradient_bg(slide, self.brand.background, RGBColor(0x12, 0x17, 0x1E))
 
-        # Teal top bar
-        self._add_accent_bar(slide, Inches(0), Inches(0), self.SLIDE_WIDTH, Inches(0.04), color=self.brand.accent)
+        # Accent bar at top
+        self._add_accent_bar(slide, Inches(0), Inches(0), self.SLIDE_WIDTH, Inches(0.03),
+                             color=self.brand.primary)
 
         # Title
         self._add_text_box(
-            slide, Inches(1.0), Inches(0.4),
+            slide, Inches(1.2), Inches(0.5),
             Inches(11.0), Inches(1.0),
             spec.title, 26, self.brand.font_title,
-            self.brand.text_dark, bold=True,
+            self.brand.text_light, bold=True,
         )
 
-        # Red accent bar
-        self._add_accent_bar(slide, Inches(1.0), Inches(1.6), Inches(1.5), Inches(0.04))
+        # Cyan accent bar
+        self._add_accent_bar(slide, Inches(1.2), Inches(1.5), Inches(1.5), Inches(0.04),
+                             color=self.brand.primary)
 
-        # Stat card — rounded rect with light red fill and red border
+        # Stat card — glassmorphism dark card with cyan border
         if spec.body:
             card = self._add_content_card(
-                slide, Inches(1.0), Inches(2.0), Inches(11.333), Inches(1.8),
-                fill_color=RGBColor(0xFD, 0xEC, 0xE9),
+                slide, Inches(1.2), Inches(2.0), Inches(11.0), Inches(1.8),
+                fill_color=RGBColor(0x1E, 0x29, 0x3B),
             )
             card.line.color.rgb = self.brand.primary
             card.line.width = Pt(1.5)
 
-            # Stat text centered in card
+            # Stat text centered in card — cyan
             self._add_text_box(
                 slide, Inches(1.5), Inches(2.1),
                 Inches(10.333), Inches(1.6),
@@ -1350,45 +1459,46 @@ class SlideBuilder:
         # Supporting numbered points
         if spec.bullet_points:
             bullet_top = Inches(4.2)
-            self._build_numbered_items(slide, Inches(1.0), bullet_top, Inches(11.0), spec.bullet_points, 0)
+            self._build_numbered_items(slide, Inches(1.2), bullet_top, Inches(11.0), spec.bullet_points, 0)
 
-        self._add_footer_bar(slide, slide_number=spec.number)
+        self._add_footer_bar(slide, slide_number=spec.number, dark_bg=True)
         self._add_speaker_notes(slide, spec.speaker_notes)
 
     def _build_recodme_quote(self, spec) -> None:
         """Quote/list slide: Numbered items mode or quote mode depending on content."""
         slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])
-        self._set_slide_bg(slide, self.brand.background)
+        self._set_gradient_bg(slide, self.brand.background, RGBColor(0x12, 0x17, 0x1E))
 
         has_items = (spec.checkbox_items and len(spec.checkbox_items) > 0) or spec.bullet_points
 
         if has_items:
-            # ── Numbered items mode (replaces checkbox mode) ──
-            # Teal top bar
-            self._add_accent_bar(slide, Inches(0), Inches(0), self.SLIDE_WIDTH, Inches(0.04), color=self.brand.accent)
+            # ── Numbered items mode ──
+            self._add_accent_bar(slide, Inches(0), Inches(0), self.SLIDE_WIDTH, Inches(0.03),
+                                 color=self.brand.primary)
 
             self._add_text_box(
-                slide, Inches(1.0), Inches(0.4),
+                slide, Inches(1.2), Inches(0.5),
                 Inches(11.0), Inches(1.0),
                 spec.title, 26, self.brand.font_title,
-                self.brand.text_dark, bold=True,
+                self.brand.text_light, bold=True,
             )
-            self._add_accent_bar(slide, Inches(1.0), Inches(1.5), Inches(1.5), Inches(0.04))
+            self._add_accent_bar(slide, Inches(1.2), Inches(1.5), Inches(1.5), Inches(0.04),
+                                 color=self.brand.primary)
 
             items = spec.checkbox_items if spec.checkbox_items else spec.bullet_points
-            self._build_numbered_items(slide, Inches(1.0), Inches(2.0), Inches(11.0), items, 0)
+            self._build_numbered_items(slide, Inches(1.2), Inches(2.0), Inches(11.0), items, 0)
         else:
-            # ── Quote mode — with left teal strip ──
-            # Left teal strip
+            # ── Quote mode — with gradient left strip ──
+            # Left gradient strip (cyan→purple)
             strip = slide.shapes.add_shape(
                 MSO_SHAPE.RECTANGLE,
                 Inches(0), Inches(0), Inches(0.35), self.SLIDE_HEIGHT,
             )
             strip.fill.solid()
-            strip.fill.fore_color.rgb = self.brand.accent
+            strip.fill.fore_color.rgb = self.brand.primary
             strip.line.fill.background()
 
-            # Large quote mark
+            # Large quotation mark — cyan
             self._add_text_box(
                 slide, Inches(1.2), Inches(1.0),
                 Inches(2.0), Inches(2.0),
@@ -1396,23 +1506,23 @@ class SlideBuilder:
                 self.brand.primary, bold=True,
             )
 
-            # Quote text
+            # Quote text — white
             self._add_text_box(
                 slide, Inches(1.8), Inches(2.8),
                 Inches(10.0), Inches(3.0),
                 spec.body or spec.title, 22, self.brand.font_accent,
-                self.brand.text_dark,
+                self.brand.text_light,
                 alignment=PP_ALIGN.LEFT,
                 line_spacing=32,
             )
 
-            # Horizontal rule
+            # Horizontal rule — muted
             self._add_divider_line(
                 slide, Inches(1.8), Inches(5.6), Inches(3.0), Inches(0.02),
-                color=self.brand.secondary, opacity_pct=100,
+                color=RGBColor(0x33, 0x3D, 0x4D), opacity_pct=100,
             )
 
-            # Attribution
+            # Attribution — purple accent
             if spec.source_reference:
                 self._add_text_box(
                     slide, Inches(1.8), Inches(5.8),
@@ -1421,51 +1531,52 @@ class SlideBuilder:
                     self.brand.secondary,
                 )
 
-        self._add_footer_bar(slide, slide_number=spec.number)
+        self._add_footer_bar(slide, slide_number=spec.number, dark_bg=True)
         self._add_speaker_notes(slide, spec.speaker_notes)
 
     def _build_recodme_conclusion(self, spec) -> None:
-        """Conclusion slide: Takeaway cards for ≤3 bullets, split panel for >3."""
+        """Conclusion slide: Gradient-bordered cards with modern dark design."""
         slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])
-        self._set_slide_bg(slide, self.brand.background)
+        self._set_gradient_bg(slide, self.brand.background, RGBColor(0x0A, 0x0A, 0x1A))
 
         bullet_count = len(spec.bullet_points) if spec.bullet_points else 0
 
         if bullet_count <= 3 and bullet_count > 0:
-            # ── Card layout: teal header bar + 3 takeaway cards ──
+            # ── Card layout: gradient header + 3 takeaway cards ──
 
-            # Teal header bar
+            # Gradient header bar (cyan → purple)
             header_bar = slide.shapes.add_shape(
                 MSO_SHAPE.RECTANGLE,
                 Inches(0), Inches(0), self.SLIDE_WIDTH, Inches(1.6),
             )
             header_bar.fill.solid()
-            header_bar.fill.fore_color.rgb = self.brand.accent
+            header_bar.fill.fore_color.rgb = RGBColor(0x1E, 0x29, 0x3B)
             header_bar.line.fill.background()
 
-            # Title on teal header
+            # Title on header
             self._add_text_box(
-                slide, Inches(1.0), Inches(0.2),
+                slide, Inches(1.2), Inches(0.2),
                 Inches(11.0), Inches(0.8),
                 spec.title, 22, self.brand.font_title,
                 self.brand.text_light, bold=True,
             )
 
-            # Red accent on teal header
-            self._add_accent_bar(slide, Inches(1.0), Inches(1.1), Inches(1.5), Inches(0.04))
+            # Cyan accent on header
+            self._add_accent_bar(slide, Inches(1.2), Inches(1.1), Inches(1.5), Inches(0.04),
+                                 color=self.brand.primary)
 
             # Body text below header
             body_top = Inches(1.9)
             if spec.body:
                 self._add_text_box(
-                    slide, Inches(1.0), body_top,
+                    slide, Inches(1.2), body_top,
                     Inches(11.0), Inches(0.8),
                     spec.body, 16, self.brand.font_body,
-                    self.brand.accent,
+                    RGBColor(0x94, 0xA3, 0xB8),
                 )
                 body_top = Inches(2.8)
 
-            # Takeaway cards
+            # Takeaway cards — glassmorphism style
             card_width = Inches(3.7)
             card_height = Inches(3.3)
             card_top = Inches(3.2)
@@ -1474,56 +1585,60 @@ class SlideBuilder:
             for i, bullet in enumerate(spec.bullet_points[:3]):
                 card_x = card_positions[i]
 
-                # Card border (rounded rect, no fill, teal border)
-                self._add_content_card(
+                # Card with dark fill + cyan/purple border
+                card_color = self.brand.primary if i % 2 == 0 else self.brand.secondary
+                card = self._add_content_card(
                     slide, card_x, card_top, card_width, card_height,
-                    border_color=self.brand.accent,
+                    fill_color=RGBColor(0x1E, 0x29, 0x3B),
                 )
+                card.line.color.rgb = card_color
+                card.line.width = Pt(1.5)
 
-                # Numbered circle centered at top of card
+                # Numbered circle
                 circle_x = card_x + (card_width - Inches(0.4)) // 2
                 self._add_numbered_circle(slide, circle_x, card_top + Inches(0.3), i + 1)
 
-                # Split bullet on em dash for keyword vs explanation
+                # Split bullet on em dash
                 if " \u2014 " in bullet:
                     keyword, explanation = bullet.split(" \u2014 ", 1)
                 else:
                     keyword = bullet
                     explanation = ""
 
-                # Bold keyword below circle
+                # Bold keyword — cyan
                 self._add_text_box(
                     slide, card_x + Inches(0.2), card_top + Inches(0.9),
                     card_width - Inches(0.4), Inches(0.6),
                     keyword, 15, self.brand.font_title,
-                    self.brand.accent, bold=True,
+                    self.brand.primary, bold=True,
                     alignment=PP_ALIGN.CENTER,
                 )
 
-                # Explanation text below keyword
+                # Explanation text — light
                 if explanation:
                     self._add_text_box(
                         slide, card_x + Inches(0.2), card_top + Inches(1.6),
                         card_width - Inches(0.4), Inches(1.2),
                         explanation, 12, self.brand.font_body,
-                        self.brand.text_dark,
+                        RGBColor(0x94, 0xA3, 0xB8),
                         alignment=PP_ALIGN.CENTER,
                     )
         else:
             # ── Split panel layout for >3 bullets or no bullets ──
-            # Left teal panel
+            # Left dark panel with gradient accent
             left_panel = slide.shapes.add_shape(
                 MSO_SHAPE.RECTANGLE,
                 Inches(0), Inches(0), Inches(5.333), self.SLIDE_HEIGHT,
             )
             left_panel.fill.solid()
-            left_panel.fill.fore_color.rgb = self.brand.accent
+            left_panel.fill.fore_color.rgb = RGBColor(0x1E, 0x29, 0x3B)
             left_panel.line.fill.background()
 
-            # Red accent bar on teal panel
-            self._add_accent_bar(slide, Inches(0.8), Inches(0.5), Inches(1.5), Inches(0.05))
+            # Cyan accent bar
+            self._add_accent_bar(slide, Inches(0.8), Inches(0.5), Inches(1.5), Inches(0.05),
+                                 color=self.brand.primary)
 
-            # Title on teal panel — white
+            # Title — white
             self._add_text_box(
                 slide, Inches(0.8), Inches(0.8),
                 Inches(4.0), Inches(1.5),
@@ -1531,7 +1646,7 @@ class SlideBuilder:
                 self.brand.text_light, bold=True,
             )
 
-            # Takeaway bullets on teal panel — rich formatting
+            # Takeaway bullets — rich formatting
             if spec.bullet_points:
                 self._add_rich_bullet_list(
                     slide, Inches(1.0), Inches(2.8),
@@ -1541,9 +1656,10 @@ class SlideBuilder:
                     bold_color=self.brand.primary,
                 )
 
-            # Right side — cream background
-            # Right accent bar
-            self._add_accent_bar(slide, Inches(6.0), Inches(1.2), Inches(2.0))
+            # Right side — dark background
+            # Cyan accent bar
+            self._add_accent_bar(slide, Inches(6.0), Inches(1.2), Inches(2.0),
+                                 color=self.brand.primary)
 
             # Right body text
             if spec.body:
@@ -1551,10 +1667,10 @@ class SlideBuilder:
                     slide, Inches(6.0), Inches(1.5),
                     Inches(6.5), Inches(2.0),
                     spec.body, 16, self.brand.font_body,
-                    self.brand.accent,
+                    RGBColor(0x94, 0xA3, 0xB8),
                 )
 
-        self._add_footer_bar(slide, slide_number=spec.number)
+        self._add_footer_bar(slide, slide_number=spec.number, dark_bg=True)
         self._add_speaker_notes(slide, spec.speaker_notes)
 
     # ── Editable Mode Dispatcher ──────────────────────────────────
@@ -1635,8 +1751,15 @@ class SlideBuilder:
             has_image = bool(self._get_image(slide_spec.number))
 
             try:
-                if self.editable_mode:
-                    # Editable path: AI background + text boxes
+                if self.hybrid_mode:
+                    # Hybrid path: NotebookLM image bg + editable text overlay
+                    self._build_hybrid_slide(slide_spec)
+                    logger.info(
+                        "Built slide %d [%s] HYBRID: %s",
+                        slide_spec.number, slide_type, slide_spec.title[:60],
+                    )
+                elif self.editable_mode:
+                    # Editable path: programmatic modern layouts
                     self._build_editable_slide(slide_spec)
                     logger.info(
                         "Built slide %d [%s] EDIT: %s",
