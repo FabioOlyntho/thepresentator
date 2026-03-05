@@ -66,12 +66,29 @@ class OCRTextBlock:
     color: tuple[int, int, int]  # RGB
 
 
-def extract_text_with_positions(image_bytes: bytes) -> list[OCRTextBlock]:
+@dataclass
+class ImageRegion:
+    """A rectangular region of a slide image (percentage-based)."""
+    x_pct: float       # left edge as % of slide width
+    y_pct: float        # top edge as % of slide height
+    width_pct: float    # width as % of slide width
+    height_pct: float   # height as % of slide height
+
+
+def extract_text_with_positions(
+    image_bytes: bytes,
+    slide_height_inches: float = 7.5,
+) -> list[OCRTextBlock]:
     """
     Run RapidOCR on image and return text blocks with bounding box positions.
 
     Each result contains text, percentage-based coordinates (for slide placement),
     estimated font size, and sampled text color.
+
+    Args:
+        image_bytes: Raw PNG/JPG bytes of the slide image.
+        slide_height_inches: Actual slide height for font size calibration.
+            Default 7.5" (standard 16:9). NotebookLM uses 10.0".
     """
     img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
     img_array = np.array(img)
@@ -114,9 +131,10 @@ def extract_text_with_positions(image_bytes: bytes) -> list[OCRTextBlock]:
         width_pct = bbox_w / img_w * 100
         height_pct = bbox_h / img_h * 100
 
-        # Estimate font size: slide height is 7.5" at 72 DPI = 540 pt
-        # bbox_h pixels / img_h pixels * 540 pt
-        font_size_pt = max(8.0, min(72.0, bbox_h / img_h * 540))
+        # Estimate font size: slide height * 72 DPI = reference pt
+        # E.g. 7.5" → 540pt, 10.0" → 720pt
+        ref_pt = slide_height_inches * 72
+        font_size_pt = max(8.0, min(72.0, bbox_h / img_h * ref_pt))
 
         # Sample text color
         color = _sample_text_color(img_array, int(x_min), int(y_min), int(x_max), int(y_max))
@@ -236,9 +254,402 @@ def erase_text_from_image(
     return png_bytes.tobytes()
 
 
+def _most_common_color(
+    colors: list[tuple[int, int, int]],
+    distance_threshold: float = 30.0,
+) -> tuple[int, int, int]:
+    """
+    Find the most common color by bucketing similar colors together.
+
+    Groups colors within Euclidean distance of `distance_threshold` as "same",
+    then returns the representative of the largest bucket.
+    """
+    if not colors:
+        return (255, 255, 255)
+    if len(colors) == 1:
+        return colors[0]
+
+    # Bucket colors: each bucket has a representative and a count
+    buckets: list[tuple[tuple[int, int, int], int]] = []
+    for c in colors:
+        placed = False
+        for i, (rep, count) in enumerate(buckets):
+            dist = math.sqrt(sum((a - b) ** 2 for a, b in zip(c, rep)))
+            if dist < distance_threshold:
+                buckets[i] = (rep, count + 1)
+                placed = True
+                break
+        if not placed:
+            buckets.append((c, 1))
+
+    # Return the representative of the largest bucket
+    buckets.sort(key=lambda x: x[1], reverse=True)
+    return buckets[0][0]
+
+
+def _merge_block_group(blocks: list[OCRTextBlock]) -> OCRTextBlock:
+    """
+    Merge a group of OCRTextBlocks into a single block.
+
+    - Text: concatenated with newlines for vertically-separated lines,
+      or spaces for same-line fragments.
+    - Bounding box: union rectangle.
+    - Font size: max in group (titles dominate).
+    - Color: most common color in group.
+    """
+    if len(blocks) == 1:
+        return blocks[0]
+
+    # Sort by y then x for proper reading order
+    blocks = sorted(blocks, key=lambda b: (b.y_pct, b.x_pct))
+
+    # Average font height for gap detection
+    avg_height = sum(b.height_pct for b in blocks) / len(blocks)
+
+    # Build text: use space for same-line, newline for different lines
+    text_parts: list[str] = []
+    for i, b in enumerate(blocks):
+        if i == 0:
+            text_parts.append(b.text)
+            continue
+        prev = blocks[i - 1]
+        vertical_gap = b.y_pct - (prev.y_pct + prev.height_pct)
+        if vertical_gap < avg_height * 0.3:
+            # Same line or very close — join with space
+            text_parts.append(" " + b.text)
+        else:
+            text_parts.append("\n" + b.text)
+
+    merged_text = "".join(text_parts).strip()
+
+    # Union bounding box
+    x_min = min(b.x_pct for b in blocks)
+    y_min = min(b.y_pct for b in blocks)
+    x_max = max(b.x_pct + b.width_pct for b in blocks)
+    y_max = max(b.y_pct + b.height_pct for b in blocks)
+
+    # Font size: max in group
+    font_size = max(b.font_size_pt for b in blocks)
+
+    # Color: most common
+    color = _most_common_color([b.color for b in blocks])
+
+    return OCRTextBlock(
+        text=merged_text,
+        x_pct=x_min,
+        y_pct=y_min,
+        width_pct=x_max - x_min,
+        height_pct=y_max - y_min,
+        font_size_pt=font_size,
+        color=color,
+    )
+
+
+def group_text_blocks(blocks: list[OCRTextBlock]) -> list[OCRTextBlock]:
+    """
+    Merge spatially adjacent, visually similar text blocks using Union-Find.
+
+    Reduces overlapping single-line OCR detections into cohesive multi-line
+    editable text boxes. Keeps columns, titles, and differently-styled text
+    separate.
+
+    Merge criteria (ALL must be true for a pair):
+    1. Vertical proximity: gap < 1.8x average font height
+    2. Horizontal alignment: left-edge within 4% OR horizontal overlap > 50%
+    3. Font size similarity: within 4pt
+    4. Color similarity: RGB Euclidean distance < 60
+    5. Height sanity: combined block < 35% of slide height
+    """
+    n = len(blocks)
+    if n <= 1:
+        return list(blocks)
+
+    # Union-Find
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]  # path compression
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    # Average font height (as % of slide)
+    avg_font_h = sum(b.height_pct for b in blocks) / n
+
+    # Sort by y for efficient scanning
+    sorted_indices = sorted(range(n), key=lambda i: blocks[i].y_pct)
+
+    # Compare pairs — only scan within vertical proximity window
+    vertical_limit = avg_font_h * 3.6  # 2x the 1.8 threshold for pre-filter
+    for idx_a in range(len(sorted_indices)):
+        i = sorted_indices[idx_a]
+        bi = blocks[i]
+        bi_bottom = bi.y_pct + bi.height_pct
+
+        for idx_b in range(idx_a + 1, len(sorted_indices)):
+            j = sorted_indices[idx_b]
+            bj = blocks[j]
+
+            # Pre-filter: if too far vertically, stop scanning
+            if bj.y_pct - bi_bottom > vertical_limit:
+                break
+
+            # Criterion 1: Vertical proximity — gap < 1.8x avg font height
+            vertical_gap = bj.y_pct - bi_bottom
+            if vertical_gap > avg_font_h * 1.8:
+                continue
+
+            # Criterion 2: Horizontal alignment
+            # Option A: left-edge aligned within 4%
+            left_aligned = abs(bi.x_pct - bj.x_pct) < 4.0
+            # Option B: horizontal overlap > 50% of narrower block
+            overlap_left = max(bi.x_pct, bj.x_pct)
+            overlap_right = min(bi.x_pct + bi.width_pct, bj.x_pct + bj.width_pct)
+            overlap = max(0.0, overlap_right - overlap_left)
+            narrower_width = min(bi.width_pct, bj.width_pct)
+            horizontal_overlap = (overlap / narrower_width) > 0.5 if narrower_width > 0 else False
+            if not (left_aligned or horizontal_overlap):
+                continue
+
+            # Criterion 3: Font size similarity (within 4pt)
+            if abs(bi.font_size_pt - bj.font_size_pt) > 4.0:
+                continue
+
+            # Criterion 4: Color similarity (Euclidean distance < 60)
+            color_dist = math.sqrt(sum(
+                (a - b) ** 2 for a, b in zip(bi.color, bj.color)
+            ))
+            if color_dist > 60.0:
+                continue
+
+            # Criterion 5: Combined height < 35% of slide
+            combined_top = min(bi.y_pct, bj.y_pct)
+            combined_bottom = max(bi_bottom, bj.y_pct + bj.height_pct)
+            if (combined_bottom - combined_top) > 35.0:
+                continue
+
+            # All criteria met — merge
+            union(i, j)
+
+    # Build groups from union-find
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        root = find(i)
+        groups.setdefault(root, []).append(i)
+
+    # Merge each group
+    merged: list[OCRTextBlock] = []
+    for indices in groups.values():
+        group_blocks = [blocks[i] for i in indices]
+        mb = _merge_block_group(group_blocks)
+        # Filter whitespace-only blocks
+        if mb.text.strip():
+            merged.append(mb)
+
+    # Sort merged blocks top-to-bottom, left-to-right
+    merged.sort(key=lambda b: (b.y_pct, b.x_pct))
+    return merged
+
+
+def segment_slide_image(
+    cleaned_image_bytes: bytes,
+    bg_tolerance: float = 35.0,
+    min_region_pct: float = 1.5,
+    merge_gap_pct: float = 3.0,
+) -> list[ImageRegion]:
+    """
+    Segment a cleaned slide image into visual content regions.
+
+    Detects distinct illustrations/icons on a uniform background by
+    finding clusters of non-background pixels. Designed for cleaned
+    images (after text erasure) where the only remaining content is
+    the visual illustrations.
+
+    Algorithm:
+    1. Sample background color from image corners
+    2. Threshold: pixels far from background = content
+    3. Morphological close to connect nearby content within an icon
+    4. Find contours → bounding boxes
+    5. Filter by minimum area, merge overlapping/nearby boxes
+    6. Fallback: < 2 regions → single full-bleed
+
+    Args:
+        cleaned_image_bytes: Raw PNG bytes of the text-erased image.
+        bg_tolerance: Euclidean color distance threshold for background vs content.
+        min_region_pct: Minimum region area as % of total image to keep.
+        merge_gap_pct: Maximum gap (% of image diagonal) to merge nearby boxes.
+
+    Returns:
+        List of ImageRegion objects (percentage-based coordinates).
+    """
+    img = Image.open(io.BytesIO(cleaned_image_bytes)).convert("RGB")
+    img_array = np.array(img)
+    h, w = img_array.shape[:2]
+
+    # Step 1: Sample background from image corners (20x20px each)
+    corner_size = min(20, h // 10, w // 10)
+    corners = [
+        img_array[:corner_size, :corner_size],
+        img_array[:corner_size, -corner_size:],
+        img_array[-corner_size:, :corner_size],
+        img_array[-corner_size:, -corner_size:],
+    ]
+    bg_pixels = np.concatenate([c.reshape(-1, 3) for c in corners])
+    bg_color = bg_pixels.mean(axis=0).astype(float)
+
+    # Step 2: Per-pixel Euclidean distance from background → binary mask
+    diff = np.sqrt(np.sum((img_array.astype(float) - bg_color) ** 2, axis=2))
+    mask = (diff > bg_tolerance).astype(np.uint8) * 255
+
+    # Step 3: Morphological close to connect nearby content within an icon
+    kernel_size = max(3, int(min(h, w) * 0.04))
+    if kernel_size % 2 == 0:
+        kernel_size += 1
+    kernel = np.ones((kernel_size, kernel_size), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+    # Remove small noise with morphological open
+    small_kernel = np.ones((5, 5), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, small_kernel)
+
+    # Step 4: Find contours
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Step 5: Get bounding boxes, filter by minimum area
+    min_area = h * w * min_region_pct / 100
+    boxes: list[tuple[int, int, int, int]] = []
+    for cnt in contours:
+        x, y, bw, bh = cv2.boundingRect(cnt)
+        if bw * bh >= min_area:
+            boxes.append((x, y, x + bw, y + bh))
+
+    if not boxes:
+        return [ImageRegion(x_pct=0.0, y_pct=0.0, width_pct=100.0, height_pct=100.0)]
+
+    # Step 6: Merge overlapping or nearby boxes
+    diag = math.sqrt(h * h + w * w)
+    merge_gap_px = int(diag * merge_gap_pct / 100)
+    merged = _merge_boxes(boxes, merge_gap_px)
+
+    # Convert to ImageRegion (percentage-based), sorted left-to-right then top-to-bottom
+    regions: list[ImageRegion] = []
+    for (x1, y1, x2, y2) in merged:
+        regions.append(ImageRegion(
+            x_pct=x1 / w * 100,
+            y_pct=y1 / h * 100,
+            width_pct=(x2 - x1) / w * 100,
+            height_pct=(y2 - y1) / h * 100,
+        ))
+    regions.sort(key=lambda r: (r.y_pct, r.x_pct))
+
+    # Fallback: < 2 regions → single full-bleed
+    if len(regions) < 2:
+        return [ImageRegion(x_pct=0.0, y_pct=0.0, width_pct=100.0, height_pct=100.0)]
+
+    return regions
+
+
+def _merge_boxes(
+    boxes: list[tuple[int, int, int, int]],
+    gap: int,
+) -> list[tuple[int, int, int, int]]:
+    """
+    Merge overlapping or nearby bounding boxes.
+
+    Iteratively merges boxes that overlap or are within `gap` pixels
+    of each other until no more merges are possible.
+
+    Args:
+        boxes: List of (x1, y1, x2, y2) bounding boxes.
+        gap: Maximum pixel distance to consider boxes as "nearby".
+
+    Returns:
+        Merged list of (x1, y1, x2, y2) bounding boxes.
+    """
+    if not boxes:
+        return []
+
+    merged = [list(b) for b in boxes]
+    changed = True
+    while changed:
+        changed = False
+        new_merged: list[list[int]] = []
+        used: set[int] = set()
+        for i in range(len(merged)):
+            if i in used:
+                continue
+            box = list(merged[i])
+            for j in range(i + 1, len(merged)):
+                if j in used:
+                    continue
+                other = merged[j]
+                # Check overlap or proximity
+                if (box[0] <= other[2] + gap and box[2] >= other[0] - gap and
+                        box[1] <= other[3] + gap and box[3] >= other[1] - gap):
+                    box[0] = min(box[0], other[0])
+                    box[1] = min(box[1], other[1])
+                    box[2] = max(box[2], other[2])
+                    box[3] = max(box[3], other[3])
+                    used.add(j)
+                    changed = True
+            new_merged.append(box)
+        merged = new_merged
+
+    return [tuple(b) for b in merged]
+
+
+def crop_image_region(image_bytes: bytes, region: ImageRegion) -> bytes:
+    """
+    Crop a rectangular sub-image from the full slide image.
+
+    Args:
+        image_bytes: Raw PNG bytes of the full slide image.
+        region: ImageRegion defining the crop area (percentage-based).
+
+    Returns:
+        PNG bytes of the cropped sub-image.
+    """
+    img = Image.open(io.BytesIO(image_bytes))
+    w, h = img.size
+    left = int(region.x_pct / 100 * w)
+    top = int(region.y_pct / 100 * h)
+    right = int((region.x_pct + region.width_pct) / 100 * w)
+    bottom = int((region.y_pct + region.height_pct) / 100 * h)
+    cropped = img.crop((left, top, right, bottom))
+    buf = io.BytesIO()
+    cropped.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def remove_background(image_bytes: bytes) -> bytes:
+    """
+    Remove background from an image using rembg (U2-Net AI model).
+
+    Takes a PNG image (typically a cropped region from a slide) and returns
+    a transparent-background RGBA PNG. Works best on illustrations/icons
+    on solid-colored backgrounds.
+
+    Args:
+        image_bytes: Raw PNG bytes of the input image.
+
+    Returns:
+        PNG bytes with transparent background (RGBA).
+    """
+    from rembg import remove
+
+    result = remove(image_bytes)
+    return result
+
+
 def convert_pdnob_style(
     input_pptx: str,
     output_pptx: str | None = None,
+    pdnob_level: str = "full",
 ) -> dict:
     """
     PDNob-style conversion: extract text + positions, erase text from image,
@@ -247,6 +658,8 @@ def convert_pdnob_style(
     Args:
         input_pptx: Path to NotebookLM-generated PPTX.
         output_pptx: Output path (auto-generated if None).
+        pdnob_level: "ocr_only" (text boxes only), "remove_bg" (segmented images only),
+                     or "full" (both text boxes + segmented images).
 
     Returns:
         Dict with success status, files, metadata, timing.
@@ -259,10 +672,12 @@ def convert_pdnob_style(
         "timing": {},
     }
 
-    # Step 1: Extract images
+    # Step 1: Extract images + source dimensions
     logger.info("Step 1: Extracting slide images from %s", input_pptx)
     t0 = time.time()
     slide_images = extract_slide_images(input_pptx)
+    src_w, src_h = get_source_slide_dims(input_pptx)
+    logger.info("Source slide dimensions: %.2f\" x %.2f\"", src_w, src_h)
 
     if not slide_images:
         return {
@@ -280,17 +695,37 @@ def convert_pdnob_style(
 
     from slide_builder import SlideBuilder
 
-    builder = SlideBuilder()
+    builder = SlideBuilder(slide_width_inches=src_w, slide_height_inches=src_h)
     temp_files: list[str] = []
 
     for slide_num, img_bytes in slide_images:
         logger.info("  Slide %d/%d: OCR...", slide_num, total_slides)
         try:
-            text_blocks = extract_text_with_positions(img_bytes)
+            text_blocks = extract_text_with_positions(img_bytes, slide_height_inches=src_h)
             logger.info("    Found %d text blocks", len(text_blocks))
 
-            # Erase text from image
+            # Erase text from image (uses raw blocks for pixel-accurate mask)
             cleaned_bytes = erase_text_from_image(img_bytes, text_blocks)
+
+            # Merge blocks for clean placement (fewer, non-overlapping text boxes)
+            merged_blocks = group_text_blocks(text_blocks)
+            logger.info("    %d blocks -> %d groups", len(text_blocks), len(merged_blocks))
+
+            # Segmentation only for remove_bg and full
+            if pdnob_level in ("remove_bg", "full"):
+                regions = segment_slide_image(cleaned_bytes)
+                logger.info("    %d image regions", len(regions))
+            else:
+                regions = []
+
+            # Text boxes only for ocr_only and full
+            if pdnob_level in ("ocr_only", "full"):
+                blocks_for_slide = merged_blocks
+            else:
+                blocks_for_slide = []
+
+            logger.info("    %d blocks -> %d groups, %d regions (level=%s)",
+                        len(text_blocks), len(merged_blocks), len(regions), pdnob_level)
 
             # Save cleaned image to temp file
             tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
@@ -298,8 +733,14 @@ def convert_pdnob_style(
             tmp.close()
             temp_files.append(tmp.name)
 
-            # Build slide
-            builder.build_pdnob_slide(tmp.name, text_blocks)
+            # Build slide: image region(s) + text boxes at OCR positions
+            if len(regions) > 1:
+                builder.build_pdnob_slide(
+                    tmp.name, blocks_for_slide,
+                    image_regions=regions, cleaned_bytes=cleaned_bytes,
+                )
+            else:
+                builder.build_pdnob_slide(tmp.name, blocks_for_slide)
         except Exception as e:
             logger.error("    Slide %d failed: %s — using original image", slide_num, e)
             # Fallback: use original image without text overlay
@@ -337,6 +778,7 @@ def convert_pdnob_style(
         "title": Path(input_pptx).stem,
         "total_slides": total_slides,
         "mode": "pdnob",
+        "pdnob_level": pdnob_level,
     }
     result["timing"]["total"] = total_time
 
@@ -569,7 +1011,9 @@ def _parse_raw_text_to_slide(raw_text: str, slide_number: int, total_slides: int
     }
 
 
-def extract_slide_images(pptx_path: str) -> list[tuple[int, bytes]]:
+def extract_slide_images(
+    pptx_path: str,
+) -> list[tuple[int, bytes]]:
     """
     Extract the primary image from each slide in a NotebookLM PPTX.
 
@@ -604,6 +1048,17 @@ def extract_slide_images(pptx_path: str) -> list[tuple[int, bytes]]:
             logger.warning("No image found on slide %d", idx)
 
     return results
+
+
+def get_source_slide_dims(pptx_path: str) -> tuple[float, float]:
+    """
+    Read source PPTX slide dimensions.
+
+    Returns:
+        (width_inches, height_inches) tuple.
+    """
+    prs = Presentation(pptx_path)
+    return (prs.slide_width / 914400, prs.slide_height / 914400)
 
 
 def classify_slide_type(slide_number: int, total_slides: int, raw_type: str) -> str:
@@ -951,6 +1406,8 @@ def main():
                         help="Gemini model for Vision OCR (editable mode, default: gemini-2.5-flash)")
     parser.add_argument("--ocr-engine", choices=["gemini", "docling"], default="gemini",
                         help="OCR engine for editable mode: 'gemini' (API) or 'docling' (offline)")
+    parser.add_argument("--pdnob-level", choices=["ocr_only", "remove_bg", "full"], default="full",
+                        help="PDNob level: 'ocr_only' (text only), 'remove_bg' (images only), 'full' (both)")
 
     args = parser.parse_args()
 
@@ -962,6 +1419,7 @@ def main():
         result = convert_pdnob_style(
             input_pptx=args.input_pptx,
             output_pptx=args.output,
+            pdnob_level=args.pdnob_level,
         )
     else:
         result = convert_notebooklm_to_editable(

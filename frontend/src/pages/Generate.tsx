@@ -4,6 +4,7 @@ import { createJob } from '../api';
 import type { GenerationMode } from '../types';
 import FileDropzone from '../components/FileDropzone';
 import ModeSelector from '../components/ModeSelector';
+import PdnobLevelSelector from '../components/PdnobLevelSelector';
 import PromptInput from '../components/PromptInput';
 import LanguagePicker from '../components/LanguagePicker';
 import BrandSelector from '../components/BrandSelector';
@@ -17,6 +18,7 @@ export default function Generate() {
   const [targetLang, setTargetLang] = useState('');
   const [slideCount, setSlideCount] = useState(8);
   const [brandKitId, setBrandKitId] = useState<string | null>(null);
+  const [pdnobLevel, setPdnobLevel] = useState<'ocr_only' | 'remove_bg' | 'full'>('full');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
 
@@ -34,6 +36,7 @@ export default function Generate() {
       if (language !== 'auto') options.language = language;
       if (targetLang) options.target_language = targetLang;
       if (brandKitId) options.brand_kit_id = brandKitId;
+      if (mode === 'pdnob') options.pdnob_level = pdnobLevel;
 
       const job = await createJob(file, options);
       navigate(`/jobs/${job.id}`);
@@ -61,6 +64,9 @@ export default function Generate() {
           <div>
             <label style={styles.label}>Generation Mode</label>
             <ModeSelector value={mode} onChange={setMode} />
+            {mode === 'pdnob' && (
+              <PdnobLevelSelector value={pdnobLevel} onChange={setPdnobLevel} />
+            )}
           </div>
 
           <LanguagePicker

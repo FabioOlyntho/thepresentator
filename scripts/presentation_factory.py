@@ -130,6 +130,8 @@ def run_pipeline(
     editable_mode: bool = True,
     notebooklm_mode: bool = False,
     ocr_editable_mode: bool = False,
+    pdnob_mode: bool = False,
+    pdnob_level: str = "full",
     translate_to: str | None = None,
     ocr_engine: str = "gemini",
 ) -> dict:
@@ -168,6 +170,37 @@ def run_pipeline(
         "metadata": {},
         "timing": {},
     }
+
+    # ─── PDNob Mode: PPTX → OCR + segmentation ─────────────────
+    if pdnob_mode:
+        if not input_file.lower().endswith(".pptx"):
+            result["error"] = "PDNob mode requires PPTX input"
+            return result
+
+        logger.info("=" * 60)
+        logger.info("PDNOB MODE (level=%s): Converting PPTX", pdnob_level)
+        logger.info("=" * 60)
+
+        from ocr_converter import convert_pdnob_style
+
+        pdnob_result = convert_pdnob_style(
+            input_pptx=input_file,
+            output_pptx=str(output_dir / f"{Path(input_file).stem}_pdnob.pptx"),
+            pdnob_level=pdnob_level,
+        )
+
+        total_time = round(time.time() - start_time, 2)
+        result["timing"]["total"] = total_time
+
+        if pdnob_result["success"]:
+            result["success"] = True
+            result["files"] = pdnob_result["files"]
+            result["metadata"] = pdnob_result["metadata"]
+            result["timing"].update(pdnob_result["timing"])
+        else:
+            result["error"] = pdnob_result.get("error", "PDNob conversion failed")
+
+        return result
 
     # ─── Step 1: Extract Content ───────────────────────────────
     logger.info("=" * 60)
@@ -506,6 +539,7 @@ Modes (mutually exclusive):
   --composite    Composite — AI illustrations + pptx text layout (legacy)
   --notebooklm   NotebookLM — best visual quality (requires auth setup)
   --ocr-editable OCR+Editable — NotebookLM quality + editable Recodme output
+  --pdnob        PDNob — OCR + segmentation + bg removal on existing PPTX
 
 Post-processing:
   --translate-to CODE  Translate output PPTX (ES, EN, FR, DE, PT, IT)
@@ -542,7 +576,11 @@ Examples:
                             help="Use NotebookLM for generation (best quality, requires auth)")
     mode_group.add_argument("--ocr-editable", action="store_true",
                             help="NotebookLM quality + OCR → editable Recodme (best of both)")
+    mode_group.add_argument("--pdnob", action="store_true",
+                            help="PDNob mode: OCR + segmentation on existing PPTX (requires .pptx input)")
 
+    parser.add_argument("--pdnob-level", choices=["ocr_only", "remove_bg", "full"], default="full",
+                        help="PDNob level: 'ocr_only', 'remove_bg', or 'full' (default)")
     parser.add_argument("--ocr-engine", choices=["gemini", "docling"], default="gemini",
                         help="OCR engine for --ocr-editable mode: 'gemini' (API) or 'docling' (offline)")
     parser.add_argument("--translate-to",
@@ -554,10 +592,11 @@ Examples:
         print(f"Error: File not found: {args.input_file}")
         sys.exit(1)
 
-    # Determine mode: ocr-editable > notebooklm > editable (default) > full-slide > composite
+    # Determine mode: pdnob > ocr-editable > notebooklm > editable (default) > full-slide > composite
+    pdnob_mode = args.pdnob
     ocr_editable_mode = args.ocr_editable
     notebooklm_mode = args.notebooklm
-    editable_mode = not args.full_slide and not args.composite and not args.notebooklm and not args.ocr_editable
+    editable_mode = not args.full_slide and not args.composite and not args.notebooklm and not args.ocr_editable and not args.pdnob
     full_slide_mode = args.full_slide
 
     # Composite mode uses the old illustration model by default
@@ -580,6 +619,8 @@ Examples:
         editable_mode=editable_mode,
         notebooklm_mode=notebooklm_mode,
         ocr_editable_mode=ocr_editable_mode,
+        pdnob_mode=pdnob_mode,
+        pdnob_level=args.pdnob_level,
         translate_to=args.translate_to,
         ocr_engine=args.ocr_engine,
     )

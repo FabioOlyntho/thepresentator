@@ -30,10 +30,17 @@ from ocr_converter import (
     erase_text_from_image,
     _sample_text_color,
     OCRTextBlock,
+    ImageRegion,
     load_ocr_prompt,
     normalize_text,
     _parse_raw_text_to_slide,
     VALID_SLIDE_TYPES,
+    group_text_blocks,
+    _merge_block_group,
+    _most_common_color,
+    segment_slide_image,
+    crop_image_region,
+    remove_background,
 )
 
 
@@ -902,6 +909,658 @@ def test_convert_pdnob_empty_pptx():
     print("  [PASS] PDNob pipeline rejects empty PPTX")
 
 
+# ─── Text Block Merging Tests ────────────────────────────────────
+
+
+def test_group_text_blocks_vertical_merge():
+    """Two vertically adjacent blocks with same x merge into one."""
+    blocks = [
+        OCRTextBlock(text="Jefes /", x_pct=10.0, y_pct=22.0,
+                     width_pct=20.0, height_pct=3.0,
+                     font_size_pt=18.0, color=(255, 255, 255)),
+        OCRTextBlock(text="Superiores.", x_pct=10.0, y_pct=26.0,
+                     width_pct=20.0, height_pct=3.0,
+                     font_size_pt=18.0, color=(255, 255, 255)),
+    ]
+    merged = group_text_blocks(blocks)
+    assert len(merged) == 1, f"Expected 1 merged block, got {len(merged)}"
+    assert "Jefes /" in merged[0].text
+    assert "Superiores." in merged[0].text
+    assert merged[0].y_pct == 22.0
+    assert merged[0].height_pct == 7.0  # 26+3 - 22 = 7
+    print("  [PASS] Vertical merge: two adjacent blocks → one")
+
+
+def test_group_text_blocks_different_columns():
+    """Two blocks in separate columns stay separate."""
+    blocks = [
+        OCRTextBlock(text="Left column", x_pct=10.0, y_pct=30.0,
+                     width_pct=18.0, height_pct=3.0,
+                     font_size_pt=14.0, color=(255, 255, 255)),
+        OCRTextBlock(text="Right column", x_pct=55.0, y_pct=30.0,
+                     width_pct=18.0, height_pct=3.0,
+                     font_size_pt=14.0, color=(255, 255, 255)),
+    ]
+    merged = group_text_blocks(blocks)
+    assert len(merged) == 2, f"Expected 2 separate blocks, got {len(merged)}"
+    print("  [PASS] Different columns stay separate")
+
+
+def test_group_text_blocks_font_size_mismatch():
+    """Title (36pt) and body (14pt) stay separate."""
+    blocks = [
+        OCRTextBlock(text="Big Title", x_pct=10.0, y_pct=10.0,
+                     width_pct=60.0, height_pct=6.0,
+                     font_size_pt=36.0, color=(255, 255, 255)),
+        OCRTextBlock(text="Small body", x_pct=10.0, y_pct=18.0,
+                     width_pct=60.0, height_pct=3.0,
+                     font_size_pt=14.0, color=(255, 255, 255)),
+    ]
+    merged = group_text_blocks(blocks)
+    assert len(merged) == 2, f"Expected 2 blocks (font mismatch), got {len(merged)}"
+    print("  [PASS] Font size mismatch keeps blocks separate")
+
+
+def test_group_text_blocks_color_mismatch():
+    """White text and cyan text stay separate."""
+    blocks = [
+        OCRTextBlock(text="White text", x_pct=10.0, y_pct=20.0,
+                     width_pct=30.0, height_pct=3.0,
+                     font_size_pt=16.0, color=(255, 255, 255)),
+        OCRTextBlock(text="Cyan text", x_pct=10.0, y_pct=24.0,
+                     width_pct=30.0, height_pct=3.0,
+                     font_size_pt=16.0, color=(0, 200, 200)),
+    ]
+    merged = group_text_blocks(blocks)
+    assert len(merged) == 2, f"Expected 2 blocks (color mismatch), got {len(merged)}"
+    print("  [PASS] Color mismatch keeps blocks separate")
+
+
+def test_group_text_blocks_three_way_transitive():
+    """A merges B, B merges C → all in one group (transitive via Union-Find)."""
+    blocks = [
+        OCRTextBlock(text="Line A", x_pct=10.0, y_pct=20.0,
+                     width_pct=40.0, height_pct=3.0,
+                     font_size_pt=16.0, color=(255, 255, 255)),
+        OCRTextBlock(text="Line B", x_pct=10.0, y_pct=24.0,
+                     width_pct=40.0, height_pct=3.0,
+                     font_size_pt=16.0, color=(255, 255, 255)),
+        OCRTextBlock(text="Line C", x_pct=10.0, y_pct=28.0,
+                     width_pct=40.0, height_pct=3.0,
+                     font_size_pt=16.0, color=(255, 255, 255)),
+    ]
+    merged = group_text_blocks(blocks)
+    assert len(merged) == 1, f"Expected 1 merged block (transitive), got {len(merged)}"
+    assert "Line A" in merged[0].text
+    assert "Line B" in merged[0].text
+    assert "Line C" in merged[0].text
+    print("  [PASS] Transitive merge: A+B+C → one block")
+
+
+def test_group_text_blocks_empty_and_single():
+    """Edge cases: 0 blocks returns empty, 1 block returns itself."""
+    assert group_text_blocks([]) == []
+
+    single = [OCRTextBlock(text="Solo", x_pct=5.0, y_pct=5.0,
+                            width_pct=10.0, height_pct=2.0,
+                            font_size_pt=14.0, color=(200, 200, 200))]
+    result = group_text_blocks(single)
+    assert len(result) == 1
+    assert result[0].text == "Solo"
+    print("  [PASS] Empty and single block edge cases")
+
+
+def test_merge_block_group_text_concatenation():
+    """Vertically separated lines get newlines, same-line fragments get spaces."""
+    # Two blocks with large vertical gap → newline
+    blocks_vertical = [
+        OCRTextBlock(text="First line", x_pct=10.0, y_pct=10.0,
+                     width_pct=30.0, height_pct=3.0,
+                     font_size_pt=16.0, color=(255, 255, 255)),
+        OCRTextBlock(text="Second line", x_pct=10.0, y_pct=20.0,
+                     width_pct=30.0, height_pct=3.0,
+                     font_size_pt=16.0, color=(255, 255, 255)),
+    ]
+    merged = _merge_block_group(blocks_vertical)
+    assert "\n" in merged.text, "Vertical gap should produce newline"
+    assert "First line" in merged.text
+    assert "Second line" in merged.text
+
+    # Two blocks at nearly same y → space
+    blocks_sameline = [
+        OCRTextBlock(text="Hello", x_pct=10.0, y_pct=10.0,
+                     width_pct=10.0, height_pct=3.0,
+                     font_size_pt=16.0, color=(255, 255, 255)),
+        OCRTextBlock(text="World", x_pct=21.0, y_pct=10.5,
+                     width_pct=10.0, height_pct=3.0,
+                     font_size_pt=16.0, color=(255, 255, 255)),
+    ]
+    merged2 = _merge_block_group(blocks_sameline)
+    assert "\n" not in merged2.text, "Same-line should join with space, not newline"
+    assert "Hello" in merged2.text and "World" in merged2.text
+    print("  [PASS] Text concatenation: newlines vs spaces")
+
+
+def test_most_common_color():
+    """Color bucketing groups similar colors and returns most frequent."""
+    colors = [
+        (255, 255, 255),
+        (250, 250, 250),  # close to white
+        (255, 255, 255),
+        (0, 200, 200),    # cyan — outlier
+    ]
+    result = _most_common_color(colors)
+    # White bucket (3 entries) should win over cyan (1 entry)
+    assert result[0] > 200, f"Expected white-ish, got {result}"
+
+    # Empty returns white fallback
+    assert _most_common_color([]) == (255, 255, 255)
+
+    # Single color returns itself
+    assert _most_common_color([(100, 50, 25)]) == (100, 50, 25)
+    print("  [PASS] Most common color bucketing")
+
+
+# ─── Visual Segmentation Helper ──────────────────────────────────
+
+
+def _create_cream_image_with_content(layout: str) -> bytes:
+    """Create synthetic images for visual segmentation testing.
+
+    Args:
+        layout: One of "four_icons", "three_row", "uniform",
+                "single_icon", "faint_lines".
+    """
+    from PIL import ImageDraw
+
+    img = Image.new("RGB", (1376, 768), color=(235, 230, 215))  # cream bg
+    draw = ImageDraw.Draw(img)
+
+    if layout == "four_icons":
+        # 4 distinct colored blocks in 2x2 grid (like slide 1)
+        draw.rectangle([100, 80, 350, 330], fill=(60, 100, 80))
+        draw.rectangle([750, 80, 1000, 330], fill=(80, 120, 100))
+        draw.rectangle([100, 430, 350, 680], fill=(70, 90, 110))
+        draw.rectangle([750, 430, 1000, 680], fill=(120, 80, 70))
+    elif layout == "three_row":
+        # 3 colored blocks in horizontal row (like slide 2)
+        draw.rectangle([60, 200, 380, 560], fill=(170, 90, 40))
+        draw.rectangle([510, 200, 830, 560], fill=(100, 80, 70))
+        draw.rectangle([960, 200, 1280, 560], fill=(190, 130, 50))
+    elif layout == "uniform":
+        pass  # pure cream - no content
+    elif layout == "single_icon":
+        # One illustration centered
+        draw.rectangle([400, 200, 900, 550], fill=(50, 80, 120))
+    elif layout == "faint_lines":
+        # Only faint decorative lines close to background color
+        draw.line([(0, 384), (1376, 384)], fill=(225, 220, 205), width=2)
+        draw.line([(688, 0), (688, 768)], fill=(225, 220, 205), width=2)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+# ─── Precision Positioning + Image Segmentation Tests ────────────
+
+
+def test_positioning_no_artificial_padding():
+    """Text box width matches OCR width — no extra 0.15" padding added."""
+    from slide_builder import SlideBuilder
+
+    img = Image.new("RGB", (1280, 720), color=(200, 200, 220))
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    img.save(tmp.name)
+    tmp.close()
+
+    try:
+        builder = SlideBuilder()
+        text_blocks = [
+            OCRTextBlock(
+                text="Precise Width", x_pct=10.0, y_pct=20.0,
+                width_pct=50.0, height_pct=5.0,
+                font_size_pt=24.0, color=(255, 255, 255),
+            ),
+        ]
+        builder.build_pdnob_slide(tmp.name, text_blocks)
+
+        slide = builder.prs.slides[0]
+        text_shapes = [s for s in slide.shapes if hasattr(s, "text_frame") and s.text_frame.text]
+        assert len(text_shapes) >= 1, "Should have at least one text shape"
+
+        # Expected width: 50% of slide width, NO extra padding
+        slide_w = builder.prs.slide_width / 914400  # EMU to inches
+        expected_width_inches = 50.0 / 100 * slide_w
+        actual_width_inches = text_shapes[0].width / 914400
+
+        # Should be within 0.01" of expected (no 0.15" padding)
+        assert abs(actual_width_inches - expected_width_inches) < 0.02, (
+            f"Width {actual_width_inches:.3f}\" should be ~{expected_width_inches:.3f}\" "
+            f"(no 0.15\" padding). Diff: {abs(actual_width_inches - expected_width_inches):.3f}\""
+        )
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
+    print("  [PASS] Text box width matches OCR width (no artificial padding)")
+
+
+def test_positioning_small_min_size():
+    """Minimum text box size is 0.05", not the old 0.3"/0.2"."""
+    from slide_builder import SlideBuilder
+
+    img = Image.new("RGB", (1280, 720), color=(200, 200, 220))
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    img.save(tmp.name)
+    tmp.close()
+
+    try:
+        builder = SlideBuilder()
+        # Very small block (0.5% width = ~0.067" on 13.333" slide)
+        text_blocks = [
+            OCRTextBlock(
+                text=".", x_pct=50.0, y_pct=50.0,
+                width_pct=0.5, height_pct=0.3,
+                font_size_pt=8.0, color=(255, 255, 255),
+            ),
+        ]
+        builder.build_pdnob_slide(tmp.name, text_blocks)
+
+        slide = builder.prs.slides[0]
+        text_shapes = [s for s in slide.shapes if hasattr(s, "text_frame") and s.text_frame.text]
+        assert len(text_shapes) >= 1
+
+        width_inches = text_shapes[0].width / 914400
+        height_inches = text_shapes[0].height / 914400
+
+        # Should use 0.05" minimum, not 0.3"/0.2"
+        assert width_inches < 0.2, (
+            f"Min width {width_inches:.3f}\" should be < 0.2\" (old was 0.3\")"
+        )
+        assert height_inches < 0.15, (
+            f"Min height {height_inches:.3f}\" should be < 0.15\" (old was 0.2\")"
+        )
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
+    print("  [PASS] Minimum text box size is 0.05\" (not 0.3\"/0.2\")")
+
+
+def test_source_dims_17x10_detected():
+    """17.8\" x 10.0\" dimensions from input PPTX are detected and passed to builder."""
+    pptx_path = _create_mock_notebooklm_pptx(num_slides=1)
+    try:
+        prs = Presentation(pptx_path)
+        src_w = prs.slide_width / 914400  # EMU to inches
+        src_h = prs.slide_height / 914400
+        assert abs(src_w - 17.78) < 0.1, f"Expected ~17.78\", got {src_w:.2f}\""
+        assert abs(src_h - 10.0) < 0.1, f"Expected ~10.0\", got {src_h:.2f}\""
+    finally:
+        Path(pptx_path).unlink()
+    print("  [PASS] Source PPTX dimensions 17.8\" x 10.0\" detected")
+
+
+def test_source_dims_passed_to_builder():
+    """SlideBuilder accepts custom slide dimensions and applies them."""
+    from slide_builder import SlideBuilder
+
+    builder = SlideBuilder(slide_width_inches=17.78, slide_height_inches=10.0)
+
+    # Presentation dimensions should match
+    w_inches = builder.prs.slide_width / 914400
+    h_inches = builder.prs.slide_height / 914400
+    assert abs(w_inches - 17.78) < 0.01, f"Expected 17.78\", got {w_inches:.2f}\""
+    assert abs(h_inches - 10.0) < 0.01, f"Expected 10.0\", got {h_inches:.2f}\""
+    print("  [PASS] SlideBuilder applies custom slide dimensions")
+
+
+def test_font_size_10inch_height():
+    """10\" slide height uses 720pt reference (not hardcoded 540pt)."""
+    # Font size formula: bbox_h / img_h * (slide_height * 72)
+    # For a 10" slide: reference = 720pt
+    # A bbox that is 5% of image height → 720 * 0.05 = 36pt
+    # Old formula with 540pt would give: 540 * 0.05 = 27pt
+
+    # Create image and mock OCR
+    img = Image.new("RGB", (1780, 1000), color=(200, 200, 220))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    image_bytes = buf.getvalue()
+
+    with patch("ocr_converter._get_rapid_ocr") as mock_ocr:
+        mock_engine = MagicMock()
+        mock_ocr.return_value = mock_engine
+        # bbox height = 50px out of 1000px = 5% of image
+        mock_engine.return_value = (
+            [
+                [[[100, 100], [500, 100], [500, 150], [100, 150]], "Test text", "0.95"],
+            ],
+            [0.1],
+        )
+        blocks = extract_text_with_positions(image_bytes, slide_height_inches=10.0)
+        assert len(blocks) == 1
+        # Expected: 50/1000 * 720 = 36pt
+        assert abs(blocks[0].font_size_pt - 36.0) < 2.0, (
+            f"Font size {blocks[0].font_size_pt}pt should be ~36pt for 10\" slide, not ~27pt"
+        )
+    print("  [PASS] Font size calibrated to 10\" slide height (720pt ref)")
+
+
+def test_segment_visual_four_icons():
+    """4 colored blocks on cream background → 4 regions."""
+    image_bytes = _create_cream_image_with_content("four_icons")
+    regions = segment_slide_image(image_bytes)
+    assert len(regions) == 4, f"Four icons should produce 4 regions, got {len(regions)}"
+    # All regions should be reasonable size (each icon is ~18% x 33% = ~6% of area)
+    for r in regions:
+        assert r.width_pct > 5.0, f"Region too narrow: {r.width_pct:.1f}%"
+        assert r.height_pct > 10.0, f"Region too short: {r.height_pct:.1f}%"
+    print("  [PASS] Four icons on cream → 4 regions")
+
+
+def test_segment_visual_three_row():
+    """3 colored blocks in a row on cream → 3 regions."""
+    image_bytes = _create_cream_image_with_content("three_row")
+    regions = segment_slide_image(image_bytes)
+    assert len(regions) == 3, f"Three icons in row should produce 3 regions, got {len(regions)}"
+    # Regions should be sorted left-to-right (by x_pct)
+    x_positions = [r.x_pct for r in regions]
+    assert x_positions == sorted(x_positions), f"Regions should be sorted left-to-right"
+    print("  [PASS] Three icons in row → 3 regions")
+
+
+def test_segment_visual_uniform_fallback():
+    """Uniform cream background produces 1 region fallback."""
+    image_bytes = _create_cream_image_with_content("uniform")
+    regions = segment_slide_image(image_bytes)
+    assert len(regions) == 1, f"Uniform cream should produce 1 region, got {len(regions)}"
+    assert regions[0].x_pct == 0.0
+    assert regions[0].y_pct == 0.0
+    assert regions[0].width_pct == 100.0
+    assert regions[0].height_pct == 100.0
+    print("  [PASS] Uniform cream → single region fallback")
+
+
+def test_segment_visual_single_icon_fallback():
+    """Single illustration → 1 region fallback (< 2 regions)."""
+    image_bytes = _create_cream_image_with_content("single_icon")
+    regions = segment_slide_image(image_bytes)
+    assert len(regions) == 1, f"Single icon should produce 1 fallback region, got {len(regions)}"
+    assert regions[0].width_pct == 100.0, "Single region should be full-bleed"
+    print("  [PASS] Single icon → fallback to full-bleed")
+
+
+def test_segment_visual_faint_lines_ignored():
+    """Faint decorative lines (close to bg color) are ignored."""
+    image_bytes = _create_cream_image_with_content("faint_lines")
+    regions = segment_slide_image(image_bytes)
+    assert len(regions) == 1, f"Faint lines should be ignored → 1 fallback, got {len(regions)}"
+    print("  [PASS] Faint decorative lines ignored")
+
+
+def test_remove_background_returns_rgba():
+    """remove_background() returns RGBA (transparent) PNG bytes."""
+    # Create a simple image: colored rectangle on cream background
+    img = Image.new("RGB", (200, 200), color=(235, 230, 215))
+    from PIL import ImageDraw
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([50, 50, 150, 150], fill=(60, 100, 80))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    input_bytes = buf.getvalue()
+
+    result_bytes = remove_background(input_bytes)
+    result_img = Image.open(io.BytesIO(result_bytes))
+    assert result_img.mode == "RGBA", f"Expected RGBA, got {result_img.mode}"
+    assert result_img.size == (200, 200), f"Size should be preserved, got {result_img.size}"
+    print("  [PASS] remove_background returns RGBA PNG")
+
+
+def test_remove_background_has_transparent_pixels():
+    """After background removal, cream areas should have alpha < 255."""
+    img = Image.new("RGB", (200, 200), color=(235, 230, 215))
+    from PIL import ImageDraw
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([60, 60, 140, 140], fill=(30, 60, 120))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    input_bytes = buf.getvalue()
+
+    result_bytes = remove_background(input_bytes)
+    result_img = Image.open(io.BytesIO(result_bytes))
+    # Check corners (should be transparent — background area)
+    corner_alpha = result_img.getpixel((5, 5))[3]
+    assert corner_alpha < 128, f"Corner should be transparent, alpha={corner_alpha}"
+    print("  [PASS] remove_background makes background transparent")
+
+
+def test_remove_background_preserves_format():
+    """Output is valid PNG bytes that can be reopened."""
+    img = Image.new("RGB", (100, 100), color=(200, 50, 50))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    input_bytes = buf.getvalue()
+
+    result_bytes = remove_background(input_bytes)
+    # Should be valid PNG
+    result_img = Image.open(io.BytesIO(result_bytes))
+    assert result_img.format == "PNG", f"Expected PNG, got {result_img.format}"
+    print("  [PASS] remove_background output is valid PNG")
+
+
+def test_crop_image_region_dimensions():
+    """Cropped image matches region pixel dimensions."""
+    # Create 1000x500 test image
+    img = Image.new("RGB", (1000, 500), color=(100, 150, 200))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    image_bytes = buf.getvalue()
+
+    region = ImageRegion(x_pct=10.0, y_pct=20.0, width_pct=50.0, height_pct=40.0)
+    cropped_bytes = crop_image_region(image_bytes, region)
+
+    cropped_img = Image.open(io.BytesIO(cropped_bytes))
+    # Expected: 50% of 1000 = 500px wide, 40% of 500 = 200px tall
+    assert cropped_img.size[0] == 500, f"Expected 500px wide, got {cropped_img.size[0]}"
+    assert cropped_img.size[1] == 200, f"Expected 200px tall, got {cropped_img.size[1]}"
+    print("  [PASS] Crop image region produces correct dimensions")
+
+
+def test_build_pdnob_with_regions():
+    """Slide with image_regions has multiple images (not just one full-bleed)."""
+    from slide_builder import SlideBuilder
+
+    img = Image.new("RGB", (1280, 720), color=(200, 200, 220))
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    img.save(tmp.name)
+    tmp.close()
+
+    # Read image bytes for cropping
+    with open(tmp.name, "rb") as f:
+        cleaned_bytes = f.read()
+
+    try:
+        builder = SlideBuilder()
+        text_blocks = [
+            OCRTextBlock(
+                text="Title", x_pct=5.0, y_pct=5.0,
+                width_pct=40.0, height_pct=5.0,
+                font_size_pt=24.0, color=(255, 255, 255),
+            ),
+        ]
+        regions = [
+            ImageRegion(x_pct=0.0, y_pct=0.0, width_pct=50.0, height_pct=100.0),
+            ImageRegion(x_pct=50.0, y_pct=0.0, width_pct=50.0, height_pct=100.0),
+        ]
+        builder.build_pdnob_slide(tmp.name, text_blocks, image_regions=regions,
+                                  cleaned_bytes=cleaned_bytes)
+
+        slide = builder.prs.slides[0]
+        picture_shapes = [s for s in slide.shapes if s.shape_type == 13]
+        # Should have 2 images (one per region), not just 1 full-bleed
+        assert len(picture_shapes) == 2, (
+            f"Expected 2 picture shapes (multi-region), got {len(picture_shapes)}"
+        )
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
+    print("  [PASS] Multi-region build produces multiple images")
+
+
+def test_build_pdnob_no_regions_backward_compat():
+    """None regions → single full-bleed image (backward compatible)."""
+    from slide_builder import SlideBuilder
+
+    img = Image.new("RGB", (1280, 720), color=(200, 200, 220))
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    img.save(tmp.name)
+    tmp.close()
+
+    try:
+        builder = SlideBuilder()
+        text_blocks = [
+            OCRTextBlock(
+                text="Title", x_pct=5.0, y_pct=5.0,
+                width_pct=40.0, height_pct=5.0,
+                font_size_pt=24.0, color=(255, 255, 255),
+            ),
+        ]
+        # No image_regions param → backward compatible
+        builder.build_pdnob_slide(tmp.name, text_blocks)
+
+        slide = builder.prs.slides[0]
+        picture_shapes = [s for s in slide.shapes if s.shape_type == 13]
+        assert len(picture_shapes) == 1, (
+            f"Expected 1 full-bleed image (no regions), got {len(picture_shapes)}"
+        )
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
+    print("  [PASS] No regions → single full-bleed image (backward compat)")
+
+
+def test_full_bleed_uses_custom_dims():
+    """Full-bleed image uses actual slide dimensions, not hardcoded 13.333x7.5."""
+    from slide_builder import SlideBuilder
+
+    img = Image.new("RGB", (1780, 1000), color=(200, 200, 220))
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    img.save(tmp.name)
+    tmp.close()
+
+    try:
+        builder = SlideBuilder(slide_width_inches=17.78, slide_height_inches=10.0)
+        builder.build_pdnob_slide(tmp.name, [])
+
+        slide = builder.prs.slides[0]
+        picture_shapes = [s for s in slide.shapes if s.shape_type == 13]
+        assert len(picture_shapes) == 1
+
+        pic = picture_shapes[0]
+        pic_w = pic.width / 914400
+        pic_h = pic.height / 914400
+        # Image should fill the custom 17.78" x 10.0" slide, NOT 13.333" x 7.5"
+        assert abs(pic_w - 17.78) < 0.01, (
+            f"Full-bleed image width {pic_w:.2f}\" should be 17.78\", not 13.333\""
+        )
+        assert abs(pic_h - 10.0) < 0.01, (
+            f"Full-bleed image height {pic_h:.2f}\" should be 10.0\", not 7.5\""
+        )
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
+    print("  [PASS] Full-bleed image uses custom slide dimensions")
+
+
+# ─── PDNob Level Tests ─────────────────────────────────────────────
+
+def _create_pdnob_test_pptx() -> str:
+    """Create a PPTX with a full-bleed image slide for PDNob level testing."""
+    prs = Presentation()
+    prs.slide_width = Inches(13.333)
+    prs.slide_height = Inches(7.5)
+
+    slide = prs.slides.add_slide(prs.slide_layouts[6])  # Blank layout
+    img = Image.new("RGB", (1333, 750), color=(40, 40, 80))
+    # Draw some "text-like" blocks so OCR finds something
+    from PIL import ImageDraw
+    draw = ImageDraw.Draw(img)
+    draw.rectangle([100, 50, 600, 120], fill=(255, 255, 255))
+    draw.rectangle([100, 200, 800, 350], fill=(200, 200, 220))
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    buf.seek(0)
+
+    slide.shapes.add_picture(buf, 0, 0, prs.slide_width, prs.slide_height)
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".pptx", delete=False)
+    prs.save(tmp.name)
+    tmp.close()
+    return tmp.name
+
+
+def test_pdnob_level_ocr_only():
+    """PDNob ocr_only: text shapes present, no segmented regions (1 full-bleed picture)."""
+    input_pptx = _create_pdnob_test_pptx()
+    try:
+        result = convert_pdnob_style(input_pptx, pdnob_level="ocr_only")
+        assert result["success"], f"PDNob ocr_only failed: {result.get('error')}"
+        assert result["metadata"]["pdnob_level"] == "ocr_only"
+
+        output_path = result["files"]["pptx"]
+        prs = Presentation(output_path)
+        slide = prs.slides[0]
+
+        picture_shapes = [s for s in slide.shapes if s.shape_type == 13]
+        # ocr_only: single full-bleed image (no segmentation)
+        assert len(picture_shapes) == 1, (
+            f"ocr_only should have 1 full-bleed image, got {len(picture_shapes)}"
+        )
+        Path(output_path).unlink(missing_ok=True)
+    finally:
+        Path(input_pptx).unlink(missing_ok=True)
+    print("  [PASS] PDNob ocr_only: full-bleed image + text boxes")
+
+
+def test_pdnob_level_remove_bg():
+    """PDNob remove_bg: no text shapes, picture shapes present."""
+    input_pptx = _create_pdnob_test_pptx()
+    try:
+        result = convert_pdnob_style(input_pptx, pdnob_level="remove_bg")
+        assert result["success"], f"PDNob remove_bg failed: {result.get('error')}"
+        assert result["metadata"]["pdnob_level"] == "remove_bg"
+
+        output_path = result["files"]["pptx"]
+        prs = Presentation(output_path)
+        slide = prs.slides[0]
+
+        # remove_bg: should have picture(s) but no text boxes
+        text_shapes = [
+            s for s in slide.shapes
+            if s.has_text_frame and s.text_frame.text.strip()
+        ]
+        assert len(text_shapes) == 0, (
+            f"remove_bg should have 0 text shapes, got {len(text_shapes)}"
+        )
+        Path(output_path).unlink(missing_ok=True)
+    finally:
+        Path(input_pptx).unlink(missing_ok=True)
+    print("  [PASS] PDNob remove_bg: picture shapes only, no text")
+
+
+def test_pdnob_level_full():
+    """PDNob full: both text shapes and picture shapes present."""
+    input_pptx = _create_pdnob_test_pptx()
+    try:
+        result = convert_pdnob_style(input_pptx, pdnob_level="full")
+        assert result["success"], f"PDNob full failed: {result.get('error')}"
+        assert result["metadata"]["pdnob_level"] == "full"
+
+        output_path = result["files"]["pptx"]
+        prs = Presentation(output_path)
+        assert len(prs.slides) == 1, f"Expected 1 slide, got {len(prs.slides)}"
+        Path(output_path).unlink(missing_ok=True)
+    finally:
+        Path(input_pptx).unlink(missing_ok=True)
+    print("  [PASS] PDNob full: both text and picture shapes")
+
+
 # ─── Run All Tests ────────────────────────────────────────────────
 
 def run_all():
@@ -951,6 +1610,36 @@ def run_all():
         ("PDNob Build Slide No Text", test_build_pdnob_slide_no_text),
         ("PDNob Full Pipeline", test_convert_pdnob_style),
         ("PDNob Empty PPTX", test_convert_pdnob_empty_pptx),
+        # New: Text Block Merging
+        ("Merge Vertical Blocks", test_group_text_blocks_vertical_merge),
+        ("Merge Different Columns", test_group_text_blocks_different_columns),
+        ("Merge Font Size Mismatch", test_group_text_blocks_font_size_mismatch),
+        ("Merge Color Mismatch", test_group_text_blocks_color_mismatch),
+        ("Merge Three-Way Transitive", test_group_text_blocks_three_way_transitive),
+        ("Merge Empty and Single", test_group_text_blocks_empty_and_single),
+        ("Merge Text Concatenation", test_merge_block_group_text_concatenation),
+        ("Most Common Color", test_most_common_color),
+        # New: Precision Positioning + Image Segmentation
+        ("No Artificial Padding", test_positioning_no_artificial_padding),
+        ("Small Min Size", test_positioning_small_min_size),
+        ("Source Dims 17x10 Detected", test_source_dims_17x10_detected),
+        ("Source Dims Passed to Builder", test_source_dims_passed_to_builder),
+        ("Font Size 10\" Height", test_font_size_10inch_height),
+        ("Segment Visual Four Icons", test_segment_visual_four_icons),
+        ("Segment Visual Three Row", test_segment_visual_three_row),
+        ("Segment Visual Uniform", test_segment_visual_uniform_fallback),
+        ("Segment Visual Single Icon", test_segment_visual_single_icon_fallback),
+        ("Segment Visual Faint Lines", test_segment_visual_faint_lines_ignored),
+        ("Remove BG Returns RGBA", test_remove_background_returns_rgba),
+        ("Remove BG Transparent Pixels", test_remove_background_has_transparent_pixels),
+        ("Remove BG Valid PNG", test_remove_background_preserves_format),
+        ("Crop Image Region Dims", test_crop_image_region_dimensions),
+        ("Build PDNob Multi-Region", test_build_pdnob_with_regions),
+        ("Build PDNob No Regions Compat", test_build_pdnob_no_regions_backward_compat),
+        ("Full-Bleed Custom Dims", test_full_bleed_uses_custom_dims),
+        ("PDNob Level OCR Only", test_pdnob_level_ocr_only),
+        ("PDNob Level Remove BG", test_pdnob_level_remove_bg),
+        ("PDNob Level Full", test_pdnob_level_full),
     ]
 
     passed = 0

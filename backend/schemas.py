@@ -18,6 +18,7 @@ class JobOptions(BaseModel):
     prompt: str | None = Field(default=None, description="Design prompt")
     model: str = Field(default="gemini-2.5-flash", description="Gemini model")
     brand_kit_id: str | None = Field(default=None, description="Custom brand kit ID")
+    pdnob_level: str = Field(default="full", description="PDNob level: ocr_only, remove_bg, full")
 
 
 class JobSlideResponse(BaseModel):

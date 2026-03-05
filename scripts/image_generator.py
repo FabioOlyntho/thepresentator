@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
-# Full-slide generation (Recodme-quality)
-FULL_SLIDE_MODEL = "gemini-3-pro-image-preview"
+# Full-slide generation — Nano Banana 2 (Gemini 3.1 Flash Image Preview)
+FULL_SLIDE_MODEL = "gemini-3.1-flash-image-preview"
 # Illustration-only fallback (composite mode)
 COMPOSITE_MODEL = "gemini-2.5-flash-image"
 

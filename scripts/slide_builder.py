@@ -18,6 +18,7 @@ Generates presentations using python-pptx with:
 import json
 import logging
 import sys
+import tempfile
 from pathlib import Path
 from dataclasses import dataclass
 from lxml import etree
@@ -119,14 +120,20 @@ class SlideBuilder:
         image_paths: dict[int, str | None] | None = None,
         full_slide_mode: bool = True,
         editable_mode: bool = False,
+        slide_width_inches: float | None = None,
+        slide_height_inches: float | None = None,
     ):
         self.brand = brand or BrandConfig.default()
         self.image_paths = image_paths or {}
         self.full_slide_mode = full_slide_mode
         self.editable_mode = editable_mode
         self.prs = Presentation()
-        self.prs.slide_width = self.SLIDE_WIDTH
-        self.prs.slide_height = self.SLIDE_HEIGHT
+        if slide_width_inches is not None and slide_height_inches is not None:
+            self.prs.slide_width = Inches(slide_width_inches)
+            self.prs.slide_height = Inches(slide_height_inches)
+        else:
+            self.prs.slide_width = self.SLIDE_WIDTH
+            self.prs.slide_height = self.SLIDE_HEIGHT
 
     def _set_slide_bg(self, slide, color: RGBColor):
         """Set slide background to a solid color."""
@@ -150,7 +157,7 @@ class SlideBuilder:
         slide.shapes.add_picture(
             image_path,
             Inches(0), Inches(0),
-            self.SLIDE_WIDTH, self.SLIDE_HEIGHT,
+            self.prs.slide_width, self.prs.slide_height,
         )
 
     def _add_image_region(self, slide, image_path: str, left, top, width, height):
@@ -956,53 +963,97 @@ class SlideBuilder:
     # PDNOB MODE — Cleaned image background + editable text boxes
     # ═══════════════════════════════════════════════════════════════
 
-    def build_pdnob_slide(self, cleaned_image_path: str, text_blocks: list) -> None:
+    def build_pdnob_slide(
+        self,
+        cleaned_image_path: str,
+        text_blocks: list,
+        image_regions: list | None = None,
+        cleaned_bytes: bytes | None = None,
+    ) -> None:
         """
         Build a PDNob-style slide: cleaned background image + text boxes at OCR positions.
 
         Args:
             cleaned_image_path: Path to the text-erased image.
             text_blocks: List of OCRTextBlock objects with position/style info.
+            image_regions: Optional list of ImageRegion objects for multi-region layout.
+            cleaned_bytes: Raw PNG bytes of cleaned image (needed for cropping regions).
         """
         slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])  # Blank
 
-        # Full-bleed cleaned image as background
-        self._add_full_bleed_image(slide, cleaned_image_path)
+        # Use actual slide dimensions (may be custom, e.g. 17.78" x 10.0")
+        slide_w_inches = self.prs.slide_width / 914400  # EMU to inches
+        slide_h_inches = self.prs.slide_height / 914400
+
+        # Place background image(s)
+        if image_regions and len(image_regions) > 1 and cleaned_bytes:
+            # Multi-region: crop, remove background, place at position
+            from ocr_converter import crop_image_region, remove_background
+            for region in image_regions:
+                cropped_bytes = crop_image_region(cleaned_bytes, region)
+                cropped_bytes = remove_background(cropped_bytes)
+                tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+                tmp.write(cropped_bytes)
+                tmp.close()
+                try:
+                    self._add_image_region(
+                        slide, tmp.name,
+                        Inches(region.x_pct / 100 * slide_w_inches),
+                        Inches(region.y_pct / 100 * slide_h_inches),
+                        Inches(region.width_pct / 100 * slide_w_inches),
+                        Inches(region.height_pct / 100 * slide_h_inches),
+                    )
+                finally:
+                    Path(tmp.name).unlink(missing_ok=True)
+        else:
+            # Single full-bleed image
+            self._add_full_bleed_image(slide, cleaned_image_path)
 
         # Add editable text boxes at original OCR positions
         for block in text_blocks:
-            left = Inches(block.x_pct / 100 * 13.333)
-            top = Inches(block.y_pct / 100 * 7.5)
-            width = Inches(block.width_pct / 100 * 13.333)
-            height = Inches(block.height_pct / 100 * 7.5)
+            left = Inches(block.x_pct / 100 * slide_w_inches)
+            top = Inches(block.y_pct / 100 * slide_h_inches)
+            width = Inches(block.width_pct / 100 * slide_w_inches)
+            height = Inches(block.height_pct / 100 * slide_h_inches)
 
-            # Ensure minimum size
-            if width < Inches(0.3):
-                width = Inches(0.3)
-            if height < Inches(0.2):
-                height = Inches(0.2)
-
-            # Add small padding to width for text wrapping
-            width = Inches(min(13.333, block.width_pct / 100 * 13.333 + 0.15))
+            # Minimal floor to prevent zero-size shapes
+            if width < Inches(0.05):
+                width = Inches(0.05)
+            if height < Inches(0.05):
+                height = Inches(0.05)
 
             txBox = slide.shapes.add_textbox(left, top, width, height)
             tf = txBox.text_frame
             tf.word_wrap = True
             tf.auto_size = None
+            # Eliminate internal text frame padding
+            tf.margin_left = 0
+            tf.margin_top = 0
+            tf.margin_right = 0
+            tf.margin_bottom = 0
 
             # Make text box background transparent
             txBox.fill.background()
 
-            p = tf.paragraphs[0]
-            run = p.add_run()
-            run.text = block.text
-            run.font.size = Pt(max(8, min(60, block.font_size_pt)))
-            run.font.name = "Calibri"
-            run.font.color.rgb = RGBColor(block.color[0], block.color[1], block.color[2])
+            font_size = Pt(max(8, min(60, block.font_size_pt)))
+            font_color = RGBColor(block.color[0], block.color[1], block.color[2])
 
-            # Remove paragraph spacing for tight fit
-            p.space_before = Pt(0)
-            p.space_after = Pt(0)
+            # Support multi-line merged text blocks
+            lines = block.text.split("\n")
+            for line_idx, line_text in enumerate(lines):
+                if line_idx == 0:
+                    p = tf.paragraphs[0]
+                else:
+                    p = tf.add_paragraph()
+                run = p.add_run()
+                run.text = line_text
+                run.font.size = font_size
+                run.font.name = "Calibri"
+                run.font.color.rgb = font_color
+
+                # Remove paragraph spacing for tight fit
+                p.space_before = Pt(0)
+                p.space_after = Pt(0)
 
     # ═══════════════════════════════════════════════════════════════
     # EDITABLE MODE — Programmatic Recodme layouts (no AI images)

@@ -10,7 +10,7 @@ export interface JobSlide {
 export interface Job {
   id: string;
   status: 'pending' | 'processing' | 'completed' | 'failed';
-  mode: 'editable' | 'full_slide' | 'notebooklm' | 'ocr_editable' | 'translate';
+  mode: 'editable' | 'full_slide' | 'notebooklm' | 'ocr_editable' | 'pdnob' | 'translate';
   title: string | null;
   language: string | null;
   target_language: string | null;
@@ -77,7 +77,7 @@ export interface ProgressEvent {
 
 /* ─── UI Types ─── */
 
-export type GenerationMode = 'editable' | 'full_slide' | 'notebooklm' | 'ocr_editable' | 'translate';
+export type GenerationMode = 'editable' | 'full_slide' | 'notebooklm' | 'ocr_editable' | 'pdnob' | 'translate';
 
 export interface ModeOption {
   id: GenerationMode;
@@ -88,25 +88,30 @@ export interface ModeOption {
 
 export const MODE_OPTIONS: ModeOption[] = [
   {
-    id: 'ocr_editable',
-    label: 'OCR + Editable',
-    description: 'Best quality NotebookLM slides, converted to editable format',
-    recommended: true,
-  },
-  {
     id: 'editable',
-    label: 'Editable',
-    description: 'Fast, AI-generated editable slides with Recodme layouts',
+    label: 'Just Text',
+    description: 'Generate a presentation without any image',
   },
   {
     id: 'notebooklm',
     label: 'NotebookLM',
-    description: 'Highest visual quality, image-based (non-editable)',
+    description: 'Generate a presentation through NotebookLM',
+  },
+  {
+    id: 'ocr_editable',
+    label: 'NotebookLM Text Editable',
+    description: 'Generate a presentation through NotebookLM with editable text',
+    recommended: true,
   },
   {
     id: 'full_slide',
-    label: 'Full Slide',
-    description: 'Single AI-generated image per slide',
+    label: 'NotebookLM Text and Image Editable',
+    description: 'Generate a presentation through NotebookLM with text and image editable',
+  },
+  {
+    id: 'pdnob',
+    label: 'NLM Text and Image Editable without background',
+    description: 'Generate a presentation through NotebookLM with text and image editable with removed background',
   },
 ];
 

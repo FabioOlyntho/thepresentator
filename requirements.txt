@@ -21,6 +21,11 @@ google-auth-oauthlib>=1.2.0
 #   pip install docling>=2.0.0
 # Note: Docling pulls in PyTorch (~2GB). Only install if using --ocr-engine docling.
 
+# OCR + Image Processing (for PDNob mode)
+opencv-python>=4.8.0
+rapidocr-onnxruntime>=1.3.0
+rembg[cpu]>=2.0.0
+
 # Utilities
 python-dotenv>=1.0.0
 Pillow>=10.0.0

@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-VALID_MODES = {"editable", "full_slide", "notebooklm", "ocr_editable", "translate"}
+VALID_MODES = {"editable", "full_slide", "notebooklm", "ocr_editable", "pdnob", "translate"}
 
 
 @router.post("/jobs", response_model=JobResponse, status_code=201)
@@ -98,6 +98,7 @@ async def create_job(
             prompt=opts.prompt,
             model=opts.model,
             brand_path=brand_path or settings.DEFAULT_BRAND_PATH,
+            pdnob_level=opts.pdnob_level,
         )
     )
 
