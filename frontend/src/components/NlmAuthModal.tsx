@@ -1,4 +1,4 @@
-import { useState, useRef, type CSSProperties } from 'react';
+import { useState, useRef, useEffect, useCallback, type CSSProperties } from 'react';
 import {
   nlmAuthStart,
   nlmAuthClick,
@@ -16,13 +16,30 @@ interface Props {
 const VIEWPORT_W = 1024;
 const VIEWPORT_H = 700;
 
+/** Keys that should be forwarded to the remote browser as-is */
+const FORWARD_KEYS = new Set([
+  'Enter', 'Tab', 'Backspace', 'Delete', 'Escape',
+  'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown',
+  'Home', 'End',
+]);
+
 export default function NlmAuthModal({ onSuccess, onCancel }: Props) {
   const [screenshot, setScreenshot] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<'idle' | 'loading' | 'active' | 'saving' | 'error'>('idle');
   const [error, setError] = useState('');
-  const [textInput, setTextInput] = useState('');
   const imgRef = useRef<HTMLImageElement>(null);
+  const frameRef = useRef<HTMLDivElement>(null);
+  const charBuffer = useRef('');
+  const flushTimer = useRef<number | null>(null);
+  const busyRef = useRef(false);
+
+  // Focus the browser frame when active
+  useEffect(() => {
+    if (status === 'active' && frameRef.current) {
+      frameRef.current.focus();
+    }
+  }, [status, screenshot]);
 
   async function handleStart() {
     setStatus('loading');
@@ -53,22 +70,40 @@ export default function NlmAuthModal({ onSuccess, onCancel }: Props) {
       // ignore click errors
     }
     setLoading(false);
+    // Re-focus the frame so keyboard input keeps working
+    frameRef.current?.focus();
   }
 
-  async function handleType() {
-    if (!textInput.trim()) return;
+  /** Flush any buffered characters to the remote browser */
+  const flushBuffer = useCallback(async () => {
+    if (flushTimer.current) {
+      clearTimeout(flushTimer.current);
+      flushTimer.current = null;
+    }
+    const text = charBuffer.current;
+    if (!text) return;
+    charBuffer.current = '';
+
+    if (busyRef.current) return;
+    busyRef.current = true;
     setLoading(true);
     try {
-      const res = await nlmAuthType(textInput);
+      const res = await nlmAuthType(text);
       setScreenshot(res.screenshot);
-      setTextInput('');
     } catch {
       // ignore
     }
     setLoading(false);
-  }
+    busyRef.current = false;
+  }, []);
 
-  async function handleKey(key: string) {
+  /** Send a special key to the remote browser */
+  const sendKey = useCallback(async (key: string) => {
+    // Flush any pending characters first
+    await flushBuffer();
+
+    if (busyRef.current) return;
+    busyRef.current = true;
     setLoading(true);
     try {
       const res = await nlmAuthKey(key);
@@ -77,6 +112,54 @@ export default function NlmAuthModal({ onSuccess, onCancel }: Props) {
       // ignore
     }
     setLoading(false);
+    busyRef.current = false;
+  }, [flushBuffer]);
+
+  /** Handle keyboard events on the browser frame */
+  function handleKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (status !== 'active' || loading) return;
+
+    // Don't interfere with browser shortcuts
+    if (e.ctrlKey || e.metaKey) {
+      // Allow Ctrl+V (paste) — handled by onPaste
+      if (e.key === 'v' || e.key === 'V') return;
+      // Allow Ctrl+A (select all in remote browser)
+      if (e.key === 'a' || e.key === 'A') {
+        e.preventDefault();
+        sendKey('Control+a');
+        return;
+      }
+      return;
+    }
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    // Special keys: send immediately
+    if (FORWARD_KEYS.has(e.key)) {
+      sendKey(e.key);
+      return;
+    }
+
+    // Printable character: buffer it
+    if (e.key.length === 1) {
+      charBuffer.current += e.key;
+      // Debounce: flush after 250ms of no typing
+      if (flushTimer.current) clearTimeout(flushTimer.current);
+      flushTimer.current = window.setTimeout(() => {
+        flushBuffer();
+      }, 250);
+    }
+  }
+
+  /** Handle paste events */
+  async function handlePaste(e: React.ClipboardEvent) {
+    e.preventDefault();
+    const text = e.clipboardData.getData('text');
+    if (!text) return;
+
+    charBuffer.current += text;
+    flushBuffer();
   }
 
   async function handleComplete() {
@@ -139,11 +222,18 @@ export default function NlmAuthModal({ onSuccess, onCancel }: Props) {
 
         {(status === 'active' || status === 'saving') && screenshot && (
           <>
-            <div style={styles.browserFrame}>
+            <div
+              ref={frameRef}
+              tabIndex={0}
+              onKeyDown={handleKeyDown}
+              onPaste={handlePaste}
+              style={styles.browserFrame}
+            >
               <img
                 ref={imgRef}
                 src={`data:image/png;base64,${screenshot}`}
                 alt="Browser"
+                draggable={false}
                 style={{
                   ...styles.browserImg,
                   opacity: loading ? 0.7 : 1,
@@ -154,44 +244,10 @@ export default function NlmAuthModal({ onSuccess, onCancel }: Props) {
               {loading && <div style={styles.imgSpinner} />}
             </div>
 
-            <div style={styles.inputBar}>
-              <input
-                type="text"
-                value={textInput}
-                onChange={(e) => setTextInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault();
-                    if (textInput) handleType();
-                    else handleKey('Enter');
-                  }
-                }}
-                placeholder="Type here, then press Enter to send..."
-                style={styles.textInput}
-                disabled={loading || status === 'saving'}
-              />
-              <button
-                onClick={() => textInput ? handleType() : handleKey('Enter')}
-                style={styles.sendBtn}
-                disabled={loading || status === 'saving'}
-              >
-                {textInput ? 'Type' : 'Enter'}
-              </button>
-              <button
-                onClick={() => handleKey('Tab')}
-                style={styles.keyBtn}
-                disabled={loading || status === 'saving'}
-              >
-                Tab
-              </button>
-              <button
-                onClick={() => handleKey('Backspace')}
-                style={styles.keyBtn}
-                disabled={loading || status === 'saving'}
-              >
-                Bksp
-              </button>
-            </div>
+            <p style={styles.hint}>
+              Click on a field above, then type — your keyboard goes directly into the browser.
+              You can also paste (Ctrl+V).
+            </p>
 
             {error && <p style={styles.errorMsg}>{error}</p>}
 
@@ -287,14 +343,16 @@ const styles: Record<string, CSSProperties> = {
     margin: '0 16px',
     borderRadius: '8px',
     overflow: 'hidden',
-    border: '1px solid var(--pr-beige)',
+    border: '2px solid var(--pr-teal)',
     background: '#f5f5f5',
+    outline: 'none',
   },
   browserImg: {
     width: '100%',
     height: 'auto',
     display: 'block',
     transition: 'opacity 0.2s',
+    userSelect: 'none',
   },
   imgSpinner: {
     position: 'absolute',
@@ -308,48 +366,18 @@ const styles: Record<string, CSSProperties> = {
     borderRadius: '50%',
     animation: 'spin 0.8s linear infinite',
   },
-  inputBar: {
-    display: 'flex',
-    gap: '8px',
-    padding: '12px 16px',
-    alignItems: 'center',
-  },
-  textInput: {
-    flex: 1,
-    padding: '10px 14px',
-    borderRadius: '8px',
-    border: '1px solid var(--pr-beige)',
-    fontSize: '14px',
-    fontFamily: 'var(--font-body)',
-    outline: 'none',
-  },
-  sendBtn: {
-    padding: '10px 16px',
-    borderRadius: '8px',
-    background: 'var(--pr-teal)',
-    color: 'var(--pr-white)',
-    fontSize: '13px',
-    fontWeight: 600,
-    border: 'none',
-    cursor: 'pointer',
-    whiteSpace: 'nowrap',
-  },
-  keyBtn: {
-    padding: '10px 12px',
-    borderRadius: '8px',
-    background: 'var(--pr-cream-warm)',
-    color: 'var(--pr-charcoal)',
+  hint: {
     fontSize: '12px',
-    fontWeight: 500,
-    border: '1px solid var(--pr-beige)',
-    cursor: 'pointer',
-    whiteSpace: 'nowrap',
+    color: 'var(--pr-gray)',
+    textAlign: 'center',
+    margin: '8px 16px 0',
+    opacity: 0.7,
   },
   errorMsg: {
     fontSize: '13px',
     color: 'var(--pr-error)',
     padding: '0 16px',
-    margin: 0,
+    margin: '8px 0 0',
   },
   actions: {
     display: 'flex',
@@ -357,6 +385,7 @@ const styles: Record<string, CSSProperties> = {
     gap: '12px',
     padding: '16px 24px',
     borderTop: '1px solid var(--pr-beige)',
+    marginTop: '12px',
   },
   cancelBtn: {
     padding: '10px 20px',
