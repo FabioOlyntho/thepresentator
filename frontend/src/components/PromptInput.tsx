@@ -75,7 +75,7 @@ const styles: Record<string, CSSProperties> = {
   },
   wrapperFocused: {
     borderColor: 'var(--pr-teal)',
-    boxShadow: '0 0 0 3px rgba(1, 38, 45, 0.08)',
+    boxShadow: '0 0 0 3px rgba(15, 23, 42, 0.08)',
   },
   textarea: {
     width: '100%',

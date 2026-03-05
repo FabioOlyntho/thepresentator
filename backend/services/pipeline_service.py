@@ -54,6 +54,7 @@ def _run_pipeline_sync(
     full_slide_mode = mode == "full_slide"
     notebooklm_mode = mode == "notebooklm"
     ocr_editable_mode = mode == "ocr_editable"
+    pdnob_mode = mode == "pdnob"
     translate_to = target_language if mode != "translate" else None
 
     # For translate-only mode, we still run editable pipeline first

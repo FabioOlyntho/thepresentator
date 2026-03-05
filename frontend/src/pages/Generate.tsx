@@ -176,7 +176,7 @@ const styles: Record<string, CSSProperties> = {
   error: {
     padding: '12px 16px',
     borderRadius: 'var(--radius-md)',
-    background: 'rgba(194, 59, 34, 0.1)',
+    background: 'rgba(220, 38, 38, 0.1)',
     border: '1px solid var(--pr-error)',
     color: 'var(--pr-error)',
     fontSize: '13px',

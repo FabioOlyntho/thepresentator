@@ -1,16 +1,15 @@
 """
-OCR Converter — Converts NotebookLM image-based PPTX to editable Recodme PPTX.
+OCR Converter — Converts NotebookLM image-based PPTX to editable PPTX.
 
-Pipeline:
-  Image PPTX → Extract slide images (python-pptx)
-  → OCR engine (Gemini Vision or Docling) → structured JSON per slide
-  → SlideSpec objects (type, title, bullets, columns, etc.)
-  → slide_builder.py with brand config → Editable PPTX
+Two modes:
+- PDNob (default): Extract text with bounding boxes, inpaint text from image,
+  rebuild slide as cleaned background + editable text boxes at original positions.
+- Editable: Extract text-only via Gemini/Docling OCR, rebuild as Recodme-branded layouts.
 
 Usage:
-    python scripts/ocr_converter.py input_notebooklm.pptx [--output output.pptx] [--brand config/brand.json]
-    python scripts/ocr_converter.py input.pptx --ocr-engine docling   # Use Docling OCR (offline, no API key)
-    python scripts/ocr_converter.py input.pptx --ocr-engine gemini    # Use Gemini Vision (default)
+    python scripts/ocr_converter.py input.pptx                       # PDNob mode (default)
+    python scripts/ocr_converter.py input.pptx --mode editable        # Recodme editable mode
+    python scripts/ocr_converter.py input.pptx --mode editable --ocr-engine docling
 """
 
 import argparse
@@ -18,18 +17,337 @@ import base64
 import io
 import json
 import logging
+import math
 import os
 import re
 import sys
+import tempfile
 import time
 import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
 
+import cv2
+import numpy as np
 import requests
+from PIL import Image
 from pptx import Presentation
+from rapidocr_onnxruntime import RapidOCR
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
 logger = logging.getLogger(__name__)
+
+# Singleton RapidOCR engine (lazy init to avoid model load at import)
+_rapid_ocr: RapidOCR | None = None
+
+
+def _get_rapid_ocr() -> RapidOCR:
+    """Get or initialize the RapidOCR engine."""
+    global _rapid_ocr
+    if _rapid_ocr is None:
+        _rapid_ocr = RapidOCR()
+    return _rapid_ocr
+
+
+# ═══════════════════════════════════════════════════════════════
+# PDNob-Style OCR — Text + bounding boxes + inpainting
+# ═══════════════════════════════════════════════════════════════
+
+
+@dataclass
+class OCRTextBlock:
+    """A text block with position info extracted from OCR."""
+    text: str
+    x_pct: float       # left edge as % of image width
+    y_pct: float        # top edge as % of image height
+    width_pct: float    # width as % of image width
+    height_pct: float   # height as % of image height
+    font_size_pt: float  # estimated from bbox height
+    color: tuple[int, int, int]  # RGB
+
+
+def extract_text_with_positions(image_bytes: bytes) -> list[OCRTextBlock]:
+    """
+    Run RapidOCR on image and return text blocks with bounding box positions.
+
+    Each result contains text, percentage-based coordinates (for slide placement),
+    estimated font size, and sampled text color.
+    """
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    img_array = np.array(img)
+    img_h, img_w = img_array.shape[:2]
+
+    engine = _get_rapid_ocr()
+    results = engine(img_array)
+
+    # RapidOCR v3.x returns (results_list, elapsed_times)
+    # where each item in results_list is [box, text, score]
+    if results is None or results[0] is None:
+        return []
+
+    ocr_items = results[0]
+    if not ocr_items:
+        return []
+
+    blocks: list[OCRTextBlock] = []
+    for item in ocr_items:
+        box, text, score = item[0], item[1], float(item[2])
+        if score < 0.5:
+            continue
+        text = normalize_text(text.strip())
+        if not text:
+            continue
+
+        # box is 4 points: [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+        box = np.array(box)
+        x_min = float(np.min(box[:, 0]))
+        y_min = float(np.min(box[:, 1]))
+        x_max = float(np.max(box[:, 0]))
+        y_max = float(np.max(box[:, 1]))
+
+        bbox_w = x_max - x_min
+        bbox_h = y_max - y_min
+
+        # Convert to percentages
+        x_pct = x_min / img_w * 100
+        y_pct = y_min / img_h * 100
+        width_pct = bbox_w / img_w * 100
+        height_pct = bbox_h / img_h * 100
+
+        # Estimate font size: slide height is 7.5" at 72 DPI = 540 pt
+        # bbox_h pixels / img_h pixels * 540 pt
+        font_size_pt = max(8.0, min(72.0, bbox_h / img_h * 540))
+
+        # Sample text color
+        color = _sample_text_color(img_array, int(x_min), int(y_min), int(x_max), int(y_max))
+
+        blocks.append(OCRTextBlock(
+            text=text,
+            x_pct=x_pct,
+            y_pct=y_pct,
+            width_pct=width_pct,
+            height_pct=height_pct,
+            font_size_pt=round(font_size_pt, 1),
+            color=color,
+        ))
+
+    # Sort top-to-bottom, then left-to-right
+    blocks.sort(key=lambda b: (b.y_pct, b.x_pct))
+    return blocks
+
+
+def _sample_text_color(
+    img_array: np.ndarray,
+    x1: int, y1: int, x2: int, y2: int,
+) -> tuple[int, int, int]:
+    """
+    Detect text color by comparing bbox interior with background.
+
+    Samples the 2px border around the bbox as background, then finds
+    pixels inside that differ significantly from background.
+    """
+    h, w = img_array.shape[:2]
+    # Clamp coordinates
+    x1, y1 = max(0, x1), max(0, y1)
+    x2, y2 = min(w, x2), min(h, y2)
+
+    if x2 - x1 < 4 or y2 - y1 < 4:
+        return (255, 255, 255)
+
+    # Sample background: 3px border around bbox
+    pad = 3
+    border_regions = []
+    # Top border
+    if y1 >= pad:
+        border_regions.append(img_array[max(0, y1-pad):y1, x1:x2])
+    # Bottom border
+    if y2 + pad <= h:
+        border_regions.append(img_array[y2:min(h, y2+pad), x1:x2])
+    # Left border
+    if x1 >= pad:
+        border_regions.append(img_array[y1:y2, max(0, x1-pad):x1])
+    # Right border
+    if x2 + pad <= w:
+        border_regions.append(img_array[y1:y2, x2:min(w, x2+pad)])
+
+    if not border_regions:
+        return (255, 255, 255)
+
+    bg_pixels = np.concatenate([r.reshape(-1, 3) for r in border_regions if r.size > 0])
+    if len(bg_pixels) == 0:
+        return (255, 255, 255)
+
+    bg_color = bg_pixels.mean(axis=0)
+
+    # Sample interior pixels
+    interior = img_array[y1:y2, x1:x2].reshape(-1, 3).astype(float)
+    if len(interior) == 0:
+        return (255, 255, 255)
+
+    # Find pixels differing from background (Euclidean distance > 60)
+    diffs = np.sqrt(np.sum((interior - bg_color) ** 2, axis=1))
+    text_mask = diffs > 60
+    text_pixels = interior[text_mask]
+
+    if len(text_pixels) < 3:
+        # Not enough distinct pixels — fallback to white
+        return (255, 255, 255)
+
+    avg = text_pixels.mean(axis=0)
+    return (int(avg[0]), int(avg[1]), int(avg[2]))
+
+
+def erase_text_from_image(
+    image_bytes: bytes,
+    text_blocks: list[OCRTextBlock],
+) -> bytes:
+    """
+    Erase text from image using OpenCV inpainting.
+
+    Creates a binary mask from text block bounding boxes, dilates slightly
+    to catch edge pixels, then inpaints to fill text regions.
+    """
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+    img_array = np.array(img)
+    img_h, img_w = img_array.shape[:2]
+
+    # Convert to BGR for OpenCV
+    img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+
+    # Create binary mask
+    mask = np.zeros((img_h, img_w), dtype=np.uint8)
+
+    for block in text_blocks:
+        x1 = max(0, int(block.x_pct / 100 * img_w) - 3)
+        y1 = max(0, int(block.y_pct / 100 * img_h) - 3)
+        x2 = min(img_w, int((block.x_pct + block.width_pct) / 100 * img_w) + 3)
+        y2 = min(img_h, int((block.y_pct + block.height_pct) / 100 * img_h) + 3)
+        cv2.rectangle(mask, (x1, y1), (x2, y2), 255, -1)
+
+    # Dilate to catch edge pixels
+    kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.dilate(mask, kernel, iterations=1)
+
+    # Inpaint
+    result = cv2.inpaint(img_bgr, mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
+
+    # Encode as PNG
+    _, png_bytes = cv2.imencode(".png", result)
+    return png_bytes.tobytes()
+
+
+def convert_pdnob_style(
+    input_pptx: str,
+    output_pptx: str | None = None,
+) -> dict:
+    """
+    PDNob-style conversion: extract text + positions, erase text from image,
+    rebuild with cleaned image background + editable text boxes.
+
+    Args:
+        input_pptx: Path to NotebookLM-generated PPTX.
+        output_pptx: Output path (auto-generated if None).
+
+    Returns:
+        Dict with success status, files, metadata, timing.
+    """
+    start_time = time.time()
+    result: dict = {
+        "success": False,
+        "files": {},
+        "metadata": {},
+        "timing": {},
+    }
+
+    # Step 1: Extract images
+    logger.info("Step 1: Extracting slide images from %s", input_pptx)
+    t0 = time.time()
+    slide_images = extract_slide_images(input_pptx)
+
+    if not slide_images:
+        return {
+            "success": False,
+            "error": "No images found in PPTX. Is this a NotebookLM presentation?",
+        }
+
+    result["timing"]["extraction"] = round(time.time() - t0, 2)
+    total_slides = len(slide_images)
+    logger.info("Found %d slide images", total_slides)
+
+    # Step 2: OCR + inpaint each slide
+    logger.info("Step 2: PDNob OCR + inpainting")
+    t0 = time.time()
+
+    from slide_builder import SlideBuilder
+
+    builder = SlideBuilder()
+    temp_files: list[str] = []
+
+    for slide_num, img_bytes in slide_images:
+        logger.info("  Slide %d/%d: OCR...", slide_num, total_slides)
+        try:
+            text_blocks = extract_text_with_positions(img_bytes)
+            logger.info("    Found %d text blocks", len(text_blocks))
+
+            # Erase text from image
+            cleaned_bytes = erase_text_from_image(img_bytes, text_blocks)
+
+            # Save cleaned image to temp file
+            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            tmp.write(cleaned_bytes)
+            tmp.close()
+            temp_files.append(tmp.name)
+
+            # Build slide
+            builder.build_pdnob_slide(tmp.name, text_blocks)
+        except Exception as e:
+            logger.error("    Slide %d failed: %s — using original image", slide_num, e)
+            # Fallback: use original image without text overlay
+            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            tmp.write(img_bytes)
+            tmp.close()
+            temp_files.append(tmp.name)
+            builder.build_pdnob_slide(tmp.name, [])
+
+    result["timing"]["ocr_inpaint"] = round(time.time() - t0, 2)
+
+    # Step 3: Save PPTX
+    logger.info("Step 3: Saving output PPTX")
+    t0 = time.time()
+
+    if not output_pptx:
+        input_stem = Path(input_pptx).stem
+        output_dir = Path(input_pptx).parent
+        output_pptx = str(output_dir / f"{input_stem}_pdnob.pptx")
+
+    builder.save(output_pptx)
+    result["timing"]["saving"] = round(time.time() - t0, 2)
+
+    # Cleanup temp files
+    for f in temp_files:
+        try:
+            Path(f).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    total_time = round(time.time() - start_time, 2)
+    result["success"] = True
+    result["files"] = {"pptx": output_pptx}
+    result["metadata"] = {
+        "title": Path(input_pptx).stem,
+        "total_slides": total_slides,
+        "mode": "pdnob",
+    }
+    result["timing"]["total"] = total_time
+
+    logger.info("=" * 50)
+    logger.info("PDNob Conversion Complete")
+    logger.info("  Slides: %d", total_slides)
+    logger.info("  Time: %.1fs", total_time)
+    logger.info("  Output: %s", output_pptx)
+    logger.info("=" * 50)
+
+    return result
 
 # Ensure sibling modules are importable
 _scripts_dir = str(Path(__file__).parent)
@@ -622,15 +940,17 @@ def convert_notebooklm_to_editable(
 def main():
     """CLI entry point for OCR conversion."""
     parser = argparse.ArgumentParser(
-        description="Convert NotebookLM image PPTX to editable Recodme PPTX",
+        description="Convert NotebookLM image PPTX to editable PPTX",
     )
     parser.add_argument("input_pptx", help="Path to NotebookLM-generated PPTX file")
-    parser.add_argument("--output", "-o", help="Output path for editable PPTX")
-    parser.add_argument("--brand", help="Brand config JSON path")
+    parser.add_argument("--output", "-o", help="Output path for PPTX")
+    parser.add_argument("--mode", choices=["pdnob", "editable"], default="pdnob",
+                        help="Conversion mode: 'pdnob' (image+text, default) or 'editable' (Recodme layouts)")
+    parser.add_argument("--brand", help="Brand config JSON path (editable mode only)")
     parser.add_argument("--model", default="gemini-2.5-flash",
-                        help="Gemini model for Vision OCR (default: gemini-2.5-flash)")
+                        help="Gemini model for Vision OCR (editable mode, default: gemini-2.5-flash)")
     parser.add_argument("--ocr-engine", choices=["gemini", "docling"], default="gemini",
-                        help="OCR engine: 'gemini' (API, default) or 'docling' (offline)")
+                        help="OCR engine for editable mode: 'gemini' (API) or 'docling' (offline)")
 
     args = parser.parse_args()
 
@@ -638,13 +958,19 @@ def main():
         print(f"Error: File not found: {args.input_pptx}")
         sys.exit(1)
 
-    result = convert_notebooklm_to_editable(
-        input_pptx=args.input_pptx,
-        output_pptx=args.output,
-        brand_path=args.brand,
-        model=args.model,
-        ocr_engine=args.ocr_engine,
-    )
+    if args.mode == "pdnob":
+        result = convert_pdnob_style(
+            input_pptx=args.input_pptx,
+            output_pptx=args.output,
+        )
+    else:
+        result = convert_notebooklm_to_editable(
+            input_pptx=args.input_pptx,
+            output_pptx=args.output,
+            brand_path=args.brand,
+            model=args.model,
+            ocr_engine=args.ocr_engine,
+        )
 
     if not result["success"]:
         print(f"\nError: {result.get('error', 'Unknown error')}")

@@ -953,6 +953,58 @@ class SlideBuilder:
         self._add_speaker_notes(slide, spec.speaker_notes)
 
     # ═══════════════════════════════════════════════════════════════
+    # PDNOB MODE — Cleaned image background + editable text boxes
+    # ═══════════════════════════════════════════════════════════════
+
+    def build_pdnob_slide(self, cleaned_image_path: str, text_blocks: list) -> None:
+        """
+        Build a PDNob-style slide: cleaned background image + text boxes at OCR positions.
+
+        Args:
+            cleaned_image_path: Path to the text-erased image.
+            text_blocks: List of OCRTextBlock objects with position/style info.
+        """
+        slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])  # Blank
+
+        # Full-bleed cleaned image as background
+        self._add_full_bleed_image(slide, cleaned_image_path)
+
+        # Add editable text boxes at original OCR positions
+        for block in text_blocks:
+            left = Inches(block.x_pct / 100 * 13.333)
+            top = Inches(block.y_pct / 100 * 7.5)
+            width = Inches(block.width_pct / 100 * 13.333)
+            height = Inches(block.height_pct / 100 * 7.5)
+
+            # Ensure minimum size
+            if width < Inches(0.3):
+                width = Inches(0.3)
+            if height < Inches(0.2):
+                height = Inches(0.2)
+
+            # Add small padding to width for text wrapping
+            width = Inches(min(13.333, block.width_pct / 100 * 13.333 + 0.15))
+
+            txBox = slide.shapes.add_textbox(left, top, width, height)
+            tf = txBox.text_frame
+            tf.word_wrap = True
+            tf.auto_size = None
+
+            # Make text box background transparent
+            txBox.fill.background()
+
+            p = tf.paragraphs[0]
+            run = p.add_run()
+            run.text = block.text
+            run.font.size = Pt(max(8, min(60, block.font_size_pt)))
+            run.font.name = "Calibri"
+            run.font.color.rgb = RGBColor(block.color[0], block.color[1], block.color[2])
+
+            # Remove paragraph spacing for tight fit
+            p.space_before = Pt(0)
+            p.space_after = Pt(0)
+
+    # ═══════════════════════════════════════════════════════════════
     # EDITABLE MODE — Programmatic Recodme layouts (no AI images)
     # ═══════════════════════════════════════════════════════════════
 

@@ -234,8 +234,8 @@ const styles: Record<string, CSSProperties> = {
   deleteBtn: {
     padding: '6px 12px',
     borderRadius: 'var(--radius-sm)',
-    border: '1px solid rgba(194, 59, 34, 0.3)',
-    background: 'rgba(194, 59, 34, 0.06)',
+    border: '1px solid rgba(220, 38, 38, 0.3)',
+    background: 'rgba(220, 38, 38, 0.06)',
     fontSize: '12px',
     fontWeight: 500,
     color: 'var(--pr-error)',

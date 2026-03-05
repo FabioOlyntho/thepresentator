@@ -139,7 +139,7 @@ const styles: Record<string, CSSProperties> = {
   },
   circleFailed: {
     borderColor: 'var(--pr-error)',
-    boxShadow: '0 0 0 4px rgba(194, 59, 34, 0.15)',
+    boxShadow: '0 0 0 4px rgba(220, 38, 38, 0.15)',
     animation: 'none',
   },
   circleNum: {

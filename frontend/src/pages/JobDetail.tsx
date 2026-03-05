@@ -220,7 +220,7 @@ const detailStyles: Record<string, CSSProperties> = {
     display: 'flex',
     justifyContent: 'space-between',
     padding: '8px 0',
-    borderBottom: '1px solid rgba(194, 191, 170, 0.3)',
+    borderBottom: '1px solid rgba(203, 213, 225, 0.4)',
   },
   label: {
     fontSize: '13px',
@@ -270,7 +270,7 @@ const styles: Record<string, CSSProperties> = {
     fontSize: '11px',
     fontWeight: 500,
     color: 'var(--pr-teal)',
-    background: 'rgba(1, 38, 45, 0.08)',
+    background: 'rgba(15, 23, 42, 0.08)',
     padding: '2px 8px',
     borderRadius: '4px',
     textTransform: 'uppercase',
@@ -320,7 +320,7 @@ const styles: Record<string, CSSProperties> = {
   errorBox: {
     padding: '20px 24px',
     borderRadius: 'var(--radius-md)',
-    background: 'rgba(194, 59, 34, 0.06)',
+    background: 'rgba(220, 38, 38, 0.06)',
     border: '1px solid var(--pr-error)',
     marginBottom: '24px',
   },

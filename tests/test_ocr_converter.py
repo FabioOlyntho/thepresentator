@@ -25,6 +25,11 @@ from ocr_converter import (
     classify_slide_type,
     content_to_slidespec,
     convert_notebooklm_to_editable,
+    convert_pdnob_style,
+    extract_text_with_positions,
+    erase_text_from_image,
+    _sample_text_color,
+    OCRTextBlock,
     load_ocr_prompt,
     normalize_text,
     _parse_raw_text_to_slide,
@@ -626,6 +631,277 @@ def test_convert_pipeline_docling_mock(mock_docling):
     print("  [PASS] Full Docling mock conversion pipeline (3 slides)")
 
 
+# ─── PDNob OCR Tests ──────────────────────────────────────────────
+
+
+def _create_image_with_text() -> bytes:
+    """Create a test image with black text on white background."""
+    img = Image.new("RGB", (800, 600), color=(255, 255, 255))
+    # Draw a dark rectangle to simulate text area
+    from PIL import ImageDraw
+    draw = ImageDraw.Draw(img)
+    # Simulate text blocks as dark rectangles
+    draw.rectangle([50, 50, 300, 80], fill=(20, 20, 20))   # "Title" area
+    draw.rectangle([50, 120, 400, 145], fill=(30, 30, 30))  # "Body" area
+    draw.rectangle([50, 180, 350, 205], fill=(25, 25, 25))  # "Bullet" area
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@patch("ocr_converter._get_rapid_ocr")
+def test_extract_text_with_positions(mock_ocr_factory):
+    """Extract text blocks with positions from image via mocked RapidOCR."""
+    mock_engine = MagicMock()
+    mock_ocr_factory.return_value = mock_engine
+
+    # RapidOCR v3.x returns (results_list, elapsed_times)
+    # Each item: [box, text, score]
+    mock_engine.return_value = (
+        [
+            [[[50, 50], [300, 50], [300, 80], [50, 80]], "Title Text", "0.95"],
+            [[[50, 120], [400, 120], [400, 145], [50, 145]], "Body content here", "0.88"],
+        ],
+        [0.1, 0.2, 0.3],
+    )
+
+    image_bytes = _create_image_with_text()
+    blocks = extract_text_with_positions(image_bytes)
+
+    assert len(blocks) == 2, f"Expected 2 text blocks, got {len(blocks)}"
+    assert blocks[0].text == "Title Text"
+    assert blocks[1].text == "Body content here"
+    # Verify percentage coordinates are reasonable (0-100 range)
+    for b in blocks:
+        assert 0 <= b.x_pct <= 100
+        assert 0 <= b.y_pct <= 100
+        assert b.width_pct > 0
+        assert b.height_pct > 0
+        assert b.font_size_pt >= 8.0
+        assert len(b.color) == 3
+    # First block should be above second (sorted top-to-bottom)
+    assert blocks[0].y_pct < blocks[1].y_pct
+    print("  [PASS] Extract text with positions (mocked RapidOCR)")
+
+
+@patch("ocr_converter._get_rapid_ocr")
+def test_extract_text_with_positions_empty(mock_ocr_factory):
+    """No text detected returns empty list."""
+    mock_engine = MagicMock()
+    mock_ocr_factory.return_value = mock_engine
+    mock_engine.return_value = (None, [0.0])
+
+    image_bytes = _create_image_with_text()
+    blocks = extract_text_with_positions(image_bytes)
+    assert blocks == []
+    print("  [PASS] Empty OCR result returns empty list")
+
+
+@patch("ocr_converter._get_rapid_ocr")
+def test_extract_text_filters_low_confidence(mock_ocr_factory):
+    """Text blocks below 0.5 confidence are filtered out."""
+    mock_engine = MagicMock()
+    mock_ocr_factory.return_value = mock_engine
+
+    mock_engine.return_value = (
+        [
+            [[[10, 10], [200, 10], [200, 40], [10, 40]], "High confidence", "0.92"],
+            [[[10, 60], [200, 60], [200, 90], [10, 90]], "Low confidence", "0.30"],
+        ],
+        [0.1, 0.2, 0.3],
+    )
+
+    image_bytes = _create_image_with_text()
+    blocks = extract_text_with_positions(image_bytes)
+    assert len(blocks) == 1
+    assert blocks[0].text == "High confidence"
+    print("  [PASS] Low confidence text blocks filtered out")
+
+
+def test_erase_text_from_image():
+    """Erased image has same dimensions and text regions are modified."""
+    image_bytes = _create_image_with_text()
+    original_img = Image.open(io.BytesIO(image_bytes))
+    orig_w, orig_h = original_img.size
+
+    text_blocks = [
+        OCRTextBlock(
+            text="Title", x_pct=6.25, y_pct=8.33,
+            width_pct=31.25, height_pct=5.0,
+            font_size_pt=24.0, color=(20, 20, 20),
+        ),
+    ]
+
+    erased_bytes = erase_text_from_image(image_bytes, text_blocks)
+    assert len(erased_bytes) > 0
+    erased_img = Image.open(io.BytesIO(erased_bytes))
+    assert erased_img.size == (orig_w, orig_h), "Erased image dimensions should match original"
+    print("  [PASS] Erase text from image (dimensions preserved)")
+
+
+def test_erase_text_no_blocks():
+    """Erasing with no text blocks returns image unchanged in dimensions."""
+    image_bytes = _create_image_with_text()
+    erased_bytes = erase_text_from_image(image_bytes, [])
+    erased_img = Image.open(io.BytesIO(erased_bytes))
+    original_img = Image.open(io.BytesIO(image_bytes))
+    assert erased_img.size == original_img.size
+    print("  [PASS] Erase text with no blocks preserves image")
+
+
+def test_sample_text_color():
+    """Color sampling detects dark text on light background."""
+    import numpy as np
+    # Create a white image with a dark text region
+    img = np.full((100, 200, 3), 240, dtype=np.uint8)  # Light gray bg
+    # Draw dark "text" in the middle
+    img[30:60, 40:160] = [30, 30, 80]  # Dark blue-ish text
+
+    color = _sample_text_color(img, 40, 30, 160, 60)
+    # Should detect the dark text color, not the background
+    assert color[0] < 100, f"Expected dark R, got {color[0]}"
+    assert color[2] < 150, f"Expected dark-ish B, got {color[2]}"
+    print("  [PASS] Sample text color detects dark text on light bg")
+
+
+def test_sample_text_color_fallback():
+    """Color sampling falls back to white for tiny bbox."""
+    import numpy as np
+    img = np.full((100, 200, 3), 128, dtype=np.uint8)
+    # Very small bbox (< 4px)
+    color = _sample_text_color(img, 10, 10, 12, 12)
+    assert color == (255, 255, 255), "Tiny bbox should fallback to white"
+    print("  [PASS] Sample text color fallback for tiny bbox")
+
+
+def test_build_pdnob_slide():
+    """PDNob slide has background image + text boxes."""
+    from slide_builder import SlideBuilder
+
+    # Create a temp image
+    img = Image.new("RGB", (1280, 720), color=(200, 200, 220))
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    img.save(tmp.name)
+    tmp.close()
+
+    try:
+        builder = SlideBuilder()
+        text_blocks = [
+            OCRTextBlock(
+                text="Test Title", x_pct=5.0, y_pct=10.0,
+                width_pct=80.0, height_pct=8.0,
+                font_size_pt=32.0, color=(255, 255, 255),
+            ),
+            OCRTextBlock(
+                text="Body text here", x_pct=5.0, y_pct=25.0,
+                width_pct=60.0, height_pct=5.0,
+                font_size_pt=18.0, color=(200, 200, 200),
+            ),
+        ]
+        builder.build_pdnob_slide(tmp.name, text_blocks)
+
+        # Verify slide was created
+        assert len(builder.prs.slides) == 1
+        slide = builder.prs.slides[0]
+
+        # Should have picture shape (background) + 2 text boxes
+        shapes = list(slide.shapes)
+        has_picture = any(s.shape_type == 13 for s in shapes)
+        assert has_picture, "PDNob slide should have a background picture"
+
+        text_shapes = [s for s in shapes if hasattr(s, "text_frame")]
+        assert len(text_shapes) >= 2, f"Expected >= 2 text shapes, got {len(text_shapes)}"
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
+
+    print("  [PASS] PDNob slide has background image + text boxes")
+
+
+def test_build_pdnob_slide_no_text():
+    """PDNob slide with no text blocks just has the background image."""
+    from slide_builder import SlideBuilder
+
+    img = Image.new("RGB", (1280, 720), color=(100, 100, 100))
+    tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+    img.save(tmp.name)
+    tmp.close()
+
+    try:
+        builder = SlideBuilder()
+        builder.build_pdnob_slide(tmp.name, [])
+
+        assert len(builder.prs.slides) == 1
+        slide = builder.prs.slides[0]
+        has_picture = any(s.shape_type == 13 for s in slide.shapes)
+        assert has_picture, "Fallback PDNob slide should still have background image"
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
+
+    print("  [PASS] PDNob slide with no text has background image only")
+
+
+@patch("ocr_converter.extract_text_with_positions")
+@patch("ocr_converter.erase_text_from_image")
+def test_convert_pdnob_style(mock_erase, mock_extract):
+    """Full PDNob conversion pipeline with mocked OCR + inpainting."""
+    pptx_path = _create_mock_notebooklm_pptx(num_slides=2)
+
+    # Mock OCR returning text blocks
+    mock_extract.return_value = [
+        OCRTextBlock(
+            text="Slide Title", x_pct=5.0, y_pct=5.0,
+            width_pct=80.0, height_pct=8.0,
+            font_size_pt=28.0, color=(255, 255, 255),
+        ),
+    ]
+
+    # Mock inpainting returning a valid PNG
+    clean_img = Image.new("RGB", (1280, 720), color=(50, 50, 80))
+    buf = io.BytesIO()
+    clean_img.save(buf, format="PNG")
+    mock_erase.return_value = buf.getvalue()
+
+    try:
+        output_pptx = tempfile.mktemp(suffix="_pdnob.pptx")
+        result = convert_pdnob_style(
+            input_pptx=pptx_path,
+            output_pptx=output_pptx,
+        )
+
+        assert result["success"], f"PDNob pipeline failed: {result.get('error')}"
+        assert result["metadata"]["total_slides"] == 2
+        assert result["metadata"]["mode"] == "pdnob"
+        assert "ocr_inpaint" in result["timing"]
+        assert Path(output_pptx).exists()
+
+        # Verify output PPTX has correct number of slides
+        prs = Presentation(output_pptx)
+        assert len(prs.slides) == 2
+
+        # Each slide should have a picture shape (background)
+        for slide in prs.slides:
+            has_picture = any(s.shape_type == 13 for s in slide.shapes)
+            assert has_picture, "PDNob slides should have background pictures"
+
+        Path(output_pptx).unlink(missing_ok=True)
+    finally:
+        Path(pptx_path).unlink()
+
+    print("  [PASS] Full PDNob mock conversion pipeline (2 slides)")
+
+
+def test_convert_pdnob_empty_pptx():
+    """PDNob pipeline returns error for PPTX with no images."""
+    pptx_path = _create_mock_empty_pptx()
+    try:
+        result = convert_pdnob_style(input_pptx=pptx_path)
+        assert not result["success"]
+        assert "No images" in result["error"]
+    finally:
+        Path(pptx_path).unlink()
+    print("  [PASS] PDNob pipeline rejects empty PPTX")
+
+
 # ─── Run All Tests ────────────────────────────────────────────────
 
 def run_all():
@@ -663,6 +939,18 @@ def run_all():
         ("Invalid OCR Engine", test_convert_invalid_ocr_engine),
         ("Docling No API Key", test_convert_docling_no_api_key),
         ("Docling Mock Pipeline", test_convert_pipeline_docling_mock),
+        # New: PDNob OCR
+        ("PDNob Extract Text Positions", test_extract_text_with_positions),
+        ("PDNob Extract Empty Result", test_extract_text_with_positions_empty),
+        ("PDNob Filter Low Confidence", test_extract_text_filters_low_confidence),
+        ("PDNob Erase Text", test_erase_text_from_image),
+        ("PDNob Erase No Blocks", test_erase_text_no_blocks),
+        ("PDNob Sample Text Color", test_sample_text_color),
+        ("PDNob Sample Color Fallback", test_sample_text_color_fallback),
+        ("PDNob Build Slide", test_build_pdnob_slide),
+        ("PDNob Build Slide No Text", test_build_pdnob_slide_no_text),
+        ("PDNob Full Pipeline", test_convert_pdnob_style),
+        ("PDNob Empty PPTX", test_convert_pdnob_empty_pptx),
     ]
 
     passed = 0

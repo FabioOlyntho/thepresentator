@@ -175,7 +175,7 @@ const styles: Record<string, CSSProperties> = {
     fontSize: '10px',
     fontWeight: 500,
     color: 'var(--pr-white)',
-    background: 'rgba(1, 38, 45, 0.7)',
+    background: 'rgba(15, 23, 42, 0.7)',
     padding: '1px 5px',
     borderRadius: '3px',
   },
@@ -196,7 +196,7 @@ const styles: Record<string, CSSProperties> = {
   lightbox: {
     position: 'fixed',
     inset: 0,
-    background: 'rgba(1, 38, 45, 0.85)',
+    background: 'rgba(15, 23, 42, 0.85)',
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
