@@ -319,13 +319,13 @@ def test_model_constants():
 def test_brand_config():
     brand_path = Path(__file__).parent.parent / "config" / "brand.json"
     brand = BrandConfig.from_json(str(brand_path))
-    assert brand.font_title == "Outfit SemiBold"
-    assert brand.font_body == "DM Sans"
-    assert brand.font_accent == "DM Sans Medium"
+    assert brand.font_title == "Poppins SemiBold"
+    assert brand.font_body == "Poppins Medium"
+    assert brand.font_accent == "Poppins Light"
     assert brand.primary is not None
-    # Verify Modern cyan primary
-    assert brand.primary[0] == 0x06  # Red component of #06B6D4
-    print("  [PASS] Brand config loading (Modern/Outfit+DM Sans)")
+    # Verify Recodme red
+    assert brand.primary[0] == 0xE8  # Red component of #E84422
+    print("  [PASS] Brand config loading (Recodme/Poppins)")
 
 
 def test_build_presentation_no_images():
@@ -601,10 +601,10 @@ def test_composite_mode_explicit():
     print("  [PASS] Composite mode produces multi-shape slides")
 
 
-# ─── Modern Editable Mode Tests ──────────────────────────────────
+# ─── Recodme Editable Mode Tests ─────────────────────────────────
 
 def test_recodme_title_slide():
-    """Modern title: dark gradient bg + title + subtitle + accent bar."""
+    """Recodme title: cream bg + title + subtitle + accent bar + watermark."""
     spec = PresentationSpec(
         title="Title Test", subtitle="", language="EN",
         source_document="test.pdf", themes=[],
@@ -622,17 +622,17 @@ def test_recodme_title_slide():
     from pptx import Presentation
     prs = Presentation(path)
     slide = prs.slides[0]
-    # Accent bar + title + separator + subtitle + footer shapes
-    assert len(slide.shapes) >= 4, f"Title slide should have >= 4 shapes, got {len(slide.shapes)}"
-    # Verify gradient background is set
+    # Accent bar + title + separator + teal panel + dash + subtitle + watermark = 7+
+    assert len(slide.shapes) >= 6, f"Title slide should have >= 6 shapes, got {len(slide.shapes)}"
+    # Verify cream background
     bg = slide.background.fill
     assert bg.type is not None
     Path(path).unlink()
-    print("  [PASS] Modern title slide (dark gradient bg + accent bar + title)")
+    print("  [PASS] Recodme title slide (cream bg + accent bar + title)")
 
 
 def test_recodme_content_slide():
-    """Modern content: dark gradient bg + title + body + bullets + accent strip."""
+    """Recodme content: cream bg + title + body + bullets + teal strip."""
     spec = PresentationSpec(
         title="Content Test", subtitle="", language="EN",
         source_document="test.pdf", themes=[],
@@ -652,14 +652,14 @@ def test_recodme_content_slide():
     from pptx import Presentation
     prs = Presentation(path)
     slide = prs.slides[0]
-    # Accent bar + title + accent line + body + numbered items + footer = 6+
-    assert len(slide.shapes) >= 6, f"Content slide should have >= 6 shapes, got {len(slide.shapes)}"
+    # Teal bar + title + accent + body + numbered items + footer = 8+
+    assert len(slide.shapes) >= 8, f"Content slide should have >= 8 shapes, got {len(slide.shapes)}"
     Path(path).unlink()
-    print("  [PASS] Modern content slide (dark gradient bg + accent strip + bullets)")
+    print("  [PASS] Recodme content slide (cream bg + teal strip + bullets)")
 
 
 def test_recodme_section_slide():
-    """Modern section: gradient bg + white centered title + accent bar."""
+    """Recodme section: dark teal bg + white centered title + red accent bar."""
     spec = PresentationSpec(
         title="Section Test", subtitle="", language="EN",
         source_document="test.pdf", themes=[],
@@ -677,17 +677,17 @@ def test_recodme_section_slide():
     from pptx import Presentation
     prs = Presentation(path)
     slide = prs.slides[0]
-    # Gradient background
+    # Dark teal background
     bg = slide.background.fill
     assert bg.type is not None
-    # Title + accent bar + body + number = 4+
-    assert len(slide.shapes) >= 3, f"Section slide should have >= 3 shapes, got {len(slide.shapes)}"
+    # Corner blocks + title + accent bar + body + number + watermark = 7+
+    assert len(slide.shapes) >= 5, f"Section slide should have >= 5 shapes, got {len(slide.shapes)}"
     Path(path).unlink()
-    print("  [PASS] Modern section slide (gradient bg + centered title)")
+    print("  [PASS] Recodme section slide (dark teal bg + centered title)")
 
 
 def test_recodme_comparison_slide():
-    """Modern comparison: glassmorphism cards + vertical divider + headers."""
+    """Recodme comparison: two columns + vertical divider + headers."""
     spec = PresentationSpec(
         title="Compare Test", subtitle="", language="EN",
         source_document="test.pdf", themes=[],
@@ -707,10 +707,10 @@ def test_recodme_comparison_slide():
     from pptx import Presentation
     prs = Presentation(path)
     slide = prs.slides[0]
-    # Title + accent + 2 cards + 2 header texts + divider + 2 columns + footer = 10+
-    assert len(slide.shapes) >= 8, f"Comparison slide should have >= 8 shapes, got {len(slide.shapes)}"
+    # Teal bar + title + accent + 2 header bars + 2 header texts + divider + 2 columns + footer = 12+
+    assert len(slide.shapes) >= 10, f"Comparison slide should have >= 10 shapes, got {len(slide.shapes)}"
     Path(path).unlink()
-    print("  [PASS] Modern comparison slide (glassmorphism cards + divider + headers)")
+    print("  [PASS] Recodme comparison slide (two columns + divider + headers)")
 
 
 def test_recodme_comparison_fallback_split():
@@ -733,14 +733,14 @@ def test_recodme_comparison_fallback_split():
     from pptx import Presentation
     prs = Presentation(path)
     assert len(prs.slides) == 1
-    # Should have rendered without error — title + accent + divider + columns + footer
-    assert len(prs.slides[0].shapes) >= 5
+    # Should have rendered without error — teal bar + title + accent + divider + columns + footer
+    assert len(prs.slides[0].shapes) >= 7
     Path(path).unlink()
-    print("  [PASS] Modern comparison fallback splits bullets in half")
+    print("  [PASS] Recodme comparison fallback splits bullets in half")
 
 
 def test_recodme_data_slide():
-    """Modern data: glassmorphism stat card + supporting bullets."""
+    """Recodme data: stat card area + supporting bullets."""
     spec = PresentationSpec(
         title="Data Test", subtitle="", language="EN",
         source_document="test.pdf", themes=[],
@@ -760,14 +760,14 @@ def test_recodme_data_slide():
     from pptx import Presentation
     prs = Presentation(path)
     slide = prs.slides[0]
-    # Title + accent + card + stat text + numbered items + footer = 6+
-    assert len(slide.shapes) >= 6, f"Data slide should have >= 6 shapes, got {len(slide.shapes)}"
+    # Teal bar + title + accent + card + stat text + numbered items + footer = 8+
+    assert len(slide.shapes) >= 8, f"Data slide should have >= 8 shapes, got {len(slide.shapes)}"
     Path(path).unlink()
-    print("  [PASS] Modern data slide (glassmorphism stat card + bullets)")
+    print("  [PASS] Recodme data slide (stat card + bullets)")
 
 
 def test_recodme_quote_checkbox():
-    """Modern quote: checkbox items with accent checks."""
+    """Recodme quote: checkbox items with red checks."""
     spec = PresentationSpec(
         title="Checkbox Test", subtitle="", language="EN",
         source_document="test.pdf", themes=[],
@@ -786,14 +786,14 @@ def test_recodme_quote_checkbox():
     from pptx import Presentation
     prs = Presentation(path)
     slide = prs.slides[0]
-    # Accent strip + title + accent + numbered items + footer = 5+
-    assert len(slide.shapes) >= 5, f"Quote/numbered slide should have >= 5 shapes, got {len(slide.shapes)}"
+    # Teal bar + title + accent + numbered items + footer = 6+
+    assert len(slide.shapes) >= 6, f"Quote/numbered slide should have >= 6 shapes, got {len(slide.shapes)}"
     Path(path).unlink()
-    print("  [PASS] Modern quote slide with checkbox items")
+    print("  [PASS] Recodme quote slide with checkbox items")
 
 
 def test_recodme_quote_mode():
-    """Modern quote mode: large quote mark + text + attribution (no bullets)."""
+    """Recodme quote mode: large quote mark + text + attribution (no bullets)."""
     spec = PresentationSpec(
         title="Quote Test", subtitle="", language="EN",
         source_document="test.pdf", themes=[],
@@ -813,14 +813,14 @@ def test_recodme_quote_mode():
     from pptx import Presentation
     prs = Presentation(path)
     slide = prs.slides[0]
-    # Accent strip + quote mark + quote text + rule + attribution + footer = 5+
-    assert len(slide.shapes) >= 5, f"Quote mode should have >= 5 shapes, got {len(slide.shapes)}"
+    # Teal strip + quote mark + quote text + rule + attribution + footer = 6+
+    assert len(slide.shapes) >= 6, f"Quote mode should have >= 6 shapes, got {len(slide.shapes)}"
     Path(path).unlink()
-    print("  [PASS] Modern quote mode (large quote mark + attribution)")
+    print("  [PASS] Recodme quote mode (large quote mark + attribution)")
 
 
 def test_recodme_conclusion_slide():
-    """Modern conclusion: glassmorphism takeaway cards."""
+    """Recodme conclusion: split teal/cream panels."""
     spec = PresentationSpec(
         title="Conclusion Test", subtitle="", language="EN",
         source_document="test.pdf", themes=[],
@@ -840,10 +840,10 @@ def test_recodme_conclusion_slide():
     from pptx import Presentation
     prs = Presentation(path)
     slide = prs.slides[0]
-    # Cards or panel layout + footer = 6+
-    assert len(slide.shapes) >= 6, f"Conclusion slide should have >= 6 shapes, got {len(slide.shapes)}"
+    # Cards or panel layout + footer = 8+
+    assert len(slide.shapes) >= 8, f"Conclusion slide should have >= 8 shapes, got {len(slide.shapes)}"
     Path(path).unlink()
-    print("  [PASS] Modern conclusion slide (glassmorphism takeaway cards)")
+    print("  [PASS] Recodme conclusion slide (split teal/cream panels)")
 
 
 def test_recodme_no_images_needed():
@@ -873,15 +873,15 @@ def test_recodme_no_images_needed():
     from pptx import Presentation
     prs = Presentation(path)
     assert len(prs.slides) == 7
-    # No slides should have picture shapes (editable mode uses programmatic layouts)
+    # No slides should have picture shapes
     for slide in prs.slides:
         has_picture = any(s.shape_type == 13 for s in slide.shapes)
-        assert not has_picture, "Editable modern slides should not have pictures"
+        assert not has_picture, "Editable Recodme slides should not have pictures"
     size = Path(path).stat().st_size
     assert size > 10000, f"PPTX too small: {size} bytes"
 
     Path(path).unlink()
-    print(f"  [PASS] Modern editable mode works without images ({size:,} bytes, 7 slides)")
+    print(f"  [PASS] Recodme editable mode works without images ({size:,} bytes, 7 slides)")
 
 
 def test_editable_mode_ignores_images():
@@ -995,25 +995,25 @@ def test_content_card_helper():
     )
     assert card1 is not None
 
-    # With border, no fill (modern cyan accent)
+    # With border, no fill
     card2 = builder._add_content_card(
         slide, Inches(4), Inches(0), Inches(3), Inches(2),
-        border_color=RGBColor(0x06, 0xB6, 0xD4),
+        border_color=RGBColor(0x01, 0x26, 0x2D),
     )
     assert card2 is not None
     print("  [PASS] Content card helper (fill and border variants)")
 
 
 def test_footer_bar_helper():
-    """Footer bar: line + number on slide."""
+    """Footer bar: line + number + watermark on slide."""
     builder = SlideBuilder(editable_mode=True)
     from pptx.util import Inches
     slide = builder.prs.slides.add_slide(builder.prs.slide_layouts[6])
     initial_count = len(slide.shapes)
     builder._add_footer_bar(slide, slide_number=5)
-    # Should add line + number = 2 shapes (watermark removed in modern design)
-    assert len(slide.shapes) >= initial_count + 2, f"Footer bar should add 2 shapes, added {len(slide.shapes) - initial_count}"
-    print("  [PASS] Footer bar helper (line + number)")
+    # Should add line + watermark + number = 3 shapes
+    assert len(slide.shapes) >= initial_count + 3, f"Footer bar should add 3 shapes, added {len(slide.shapes) - initial_count}"
+    print("  [PASS] Footer bar helper (line + number + watermark)")
 
 
 def test_rich_bullet_formatting():
@@ -1027,7 +1027,7 @@ def test_rich_bullet_formatting():
     ]
     txBox = builder._add_rich_bullet_list(
         slide, Inches(1), Inches(1), Inches(10), Inches(3),
-        items, 14, "DM Sans", RGBColor(0xF1, 0xF5, 0xF9),
+        items, 14, "Poppins Medium", RGBColor(0x31, 0x31, 0x31),
     )
     tf = txBox.text_frame
     # First paragraph: bullet + keyword + sep + description = 4 runs
@@ -1074,7 +1074,7 @@ def test_content_slide_numbered_items():
 
 
 def test_comparison_header_bars():
-    """Comparison headers are text shapes within glassmorphism cards."""
+    """Comparison headers are rounded rects with teal fill."""
     spec = PresentationSpec(
         title="Header Bar Test", subtitle="", language="EN",
         source_document="test.pdf", themes=[],
@@ -1099,7 +1099,7 @@ def test_comparison_header_bars():
                     if hasattr(s, 'text_frame') and s.text_frame.text in ('Left Side', 'Right Side')]
     assert len(header_texts) >= 2, f"Expected 2 header text shapes, got {len(header_texts)}"
     Path(path).unlink()
-    print("  [PASS] Comparison header bars (glassmorphism cards)")
+    print("  [PASS] Comparison header bars (teal rounded rects)")
 
 
 def test_conclusion_card_layout():
@@ -1130,8 +1130,8 @@ def test_conclusion_card_layout():
     print("  [PASS] Conclusion card layout (3 takeaway cards)")
 
 
-def test_title_slide_accent_line():
-    """Title slide has a cyan accent line in modern design."""
+def test_title_slide_teal_panel():
+    """Title slide has a teal rectangle in bottom section."""
     spec = PresentationSpec(
         title="Panel Test", subtitle="", language="EN",
         source_document="test.pdf", themes=[],
@@ -1149,19 +1149,19 @@ def test_title_slide_accent_line():
     from pptx import Presentation
     prs = Presentation(path)
     slide = prs.slides[0]
-    # Check for cyan accent color (#06B6D4) in any shape
-    has_accent = False
+    # Check for teal-colored shape (accent color #01262D)
+    has_teal = False
     for s in slide.shapes:
         if hasattr(s, 'fill') and s.fill.type is not None:
             try:
-                if s.fill.fore_color and s.fill.fore_color.rgb == RGBColor(0x06, 0xB6, 0xD4):
-                    has_accent = True
+                if s.fill.fore_color and s.fill.fore_color.rgb == RGBColor(0x01, 0x26, 0x2D):
+                    has_teal = True
                     break
             except (AttributeError, TypeError):
                 pass
-    assert has_accent, "Title slide should have a cyan accent shape"
+    assert has_teal, "Title slide should have a teal panel"
     Path(path).unlink()
-    print("  [PASS] Title slide has cyan accent line")
+    print("  [PASS] Title slide has teal bottom panel")
 
 
 def test_new_slide_spec_fields():
@@ -1275,17 +1275,17 @@ def run_all():
         ("Full-Slide Mode No Images", test_full_slide_mode_no_images),
         ("Full-Slide Mode With Image", test_full_slide_mode_with_image),
         ("Composite Mode Explicit", test_composite_mode_explicit),
-        # Modern editable mode tests
-        ("Modern Title Slide", test_recodme_title_slide),
-        ("Modern Content Slide", test_recodme_content_slide),
-        ("Modern Section Slide", test_recodme_section_slide),
-        ("Modern Comparison Slide", test_recodme_comparison_slide),
-        ("Modern Comparison Fallback", test_recodme_comparison_fallback_split),
-        ("Modern Data Slide", test_recodme_data_slide),
-        ("Modern Quote Checkbox", test_recodme_quote_checkbox),
-        ("Modern Quote Mode", test_recodme_quote_mode),
-        ("Modern Conclusion Slide", test_recodme_conclusion_slide),
-        ("Modern No Images Needed", test_recodme_no_images_needed),
+        # Recodme v4 tests
+        ("Recodme Title Slide", test_recodme_title_slide),
+        ("Recodme Content Slide", test_recodme_content_slide),
+        ("Recodme Section Slide", test_recodme_section_slide),
+        ("Recodme Comparison Slide", test_recodme_comparison_slide),
+        ("Recodme Comparison Fallback", test_recodme_comparison_fallback_split),
+        ("Recodme Data Slide", test_recodme_data_slide),
+        ("Recodme Quote Checkbox", test_recodme_quote_checkbox),
+        ("Recodme Quote Mode", test_recodme_quote_mode),
+        ("Recodme Conclusion Slide", test_recodme_conclusion_slide),
+        ("Recodme No Images Needed", test_recodme_no_images_needed),
         ("Editable Ignores Images", test_editable_mode_ignores_images),
         ("Micro-Copy Mock Specs", test_micro_copy_in_mock_specs),
         ("Checkbox Items Field", test_checkbox_items_field),
@@ -1297,7 +1297,7 @@ def run_all():
         ("Content Slide Numbered Items", test_content_slide_numbered_items),
         ("Comparison Header Bars", test_comparison_header_bars),
         ("Conclusion Card Layout", test_conclusion_card_layout),
-        ("Title Slide Accent Line", test_title_slide_accent_line),
+        ("Title Slide Teal Panel", test_title_slide_teal_panel),
         ("New SlideSpec Fields", test_new_slide_spec_fields),
         # NotebookLM client tests
         ("NotebookLM Client Import", test_notebooklm_client_import),

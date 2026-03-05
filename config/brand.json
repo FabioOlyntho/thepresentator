@@ -1,18 +1,18 @@
 {
-  "name": "Modern",
+  "name": "Recodme",
   "colors": {
-    "primary": "#06B6D4",
-    "secondary": "#8B5CF6",
-    "background": "#0F1419",
-    "accent": "#06B6D4",
-    "text_dark": "#0F1419",
-    "text_light": "#F1F5F9",
-    "highlight": "#8B5CF6"
+    "primary": "#E84422",
+    "secondary": "#C2BFAA",
+    "background": "#F5F0E8",
+    "accent": "#01262D",
+    "text_dark": "#313131",
+    "text_light": "#FFFFFF",
+    "highlight": "#E84422"
   },
   "fonts": {
-    "title": "Outfit SemiBold",
-    "body": "DM Sans",
-    "accent": "DM Sans Medium"
+    "title": "Poppins SemiBold",
+    "body": "Poppins Medium",
+    "accent": "Poppins Light"
   },
   "logo_url": "https://raw.githubusercontent.com/FabioOlyntho/email-assets/main/smartoutreachIQ.png",
   "slide_dimensions": {

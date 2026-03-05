@@ -1,12 +1,11 @@
 """
-OCR Converter — Converts NotebookLM image-based PPTX to hybrid editable PPTX.
+OCR Converter — Converts NotebookLM image-based PPTX to editable Recodme PPTX.
 
 Pipeline:
   Image PPTX → Extract slide images (python-pptx)
-  → Save images as temp files for background preservation
   → OCR engine (Gemini Vision or Docling) → structured JSON per slide
   → SlideSpec objects (type, title, bullets, columns, etc.)
-  → slide_builder.py in hybrid mode → Image backgrounds + editable text overlays
+  → slide_builder.py with brand config → Editable PPTX
 
 Usage:
     python scripts/ocr_converter.py input_notebooklm.pptx [--output output.pptx] [--brand config/brand.json]
@@ -447,24 +446,19 @@ def convert_notebooklm_to_editable(
     ocr_engine: str = "gemini",
 ) -> dict:
     """
-    Full pipeline: NotebookLM image PPTX → OCR → hybrid editable PPTX.
-
-    Images are preserved as slide backgrounds with editable text overlays on top,
-    making text searchable and editable while keeping the original visual design.
+    Full pipeline: NotebookLM image PPTX → OCR → editable Recodme PPTX.
 
     Args:
         input_pptx: Path to NotebookLM-generated PPTX.
         output_pptx: Output path for editable PPTX (auto-generated if None).
         api_key: Gemini API key (falls back to GEMINI_API_KEY env var).
-        brand_path: Path to brand config JSON.
+        brand_path: Path to brand config JSON (uses default Recodme if None).
         model: Gemini model for vision extraction.
         ocr_engine: OCR engine to use: "gemini" (default, API-based) or "docling" (offline).
 
     Returns:
         Dict with success status, file paths, and metadata.
     """
-    import tempfile
-
     start_time = time.time()
 
     if ocr_engine not in ("gemini", "docling"):
@@ -503,16 +497,6 @@ def convert_notebooklm_to_editable(
     result["timing"]["extraction"] = round(time.time() - t0, 2)
     total_slides = len(slide_images)
     logger.info("Found %d slide images", total_slides)
-
-    # Step 1b: Save extracted images to temp files for background preservation
-    temp_dir = tempfile.mkdtemp(prefix="ocr_slides_")
-    image_paths: dict[int, str] = {}
-    for slide_num, img_bytes in slide_images:
-        suffix = ".png" if img_bytes[:4] == b"\x89PNG" else ".jpg"
-        img_path = Path(temp_dir) / f"slide_{slide_num:02d}{suffix}"
-        img_path.write_bytes(img_bytes)
-        image_paths[slide_num] = str(img_path)
-    logger.info("Saved %d slide images to temp directory for background preservation", len(image_paths))
 
     # Step 2: OCR each slide
     logger.info("Step 2: OCR extraction via %s", ocr_engine.capitalize())
@@ -574,8 +558,8 @@ def convert_notebooklm_to_editable(
         slides=slide_specs,
     )
 
-    # Step 3: Build hybrid PPTX (image backgrounds + editable text overlays)
-    logger.info("Step 3: Building hybrid PPTX (image bg + editable text)")
+    # Step 3: Build editable PPTX
+    logger.info("Step 3: Building editable Recodme PPTX")
     t0 = time.time()
 
     from slide_builder import SlideBuilder, BrandConfig
@@ -589,7 +573,7 @@ def convert_notebooklm_to_editable(
         else:
             brand = BrandConfig.default()
 
-    builder = SlideBuilder(brand=brand, image_paths=image_paths, hybrid_mode=True)
+    builder = SlideBuilder(brand=brand, editable_mode=True)
     builder.build_presentation(presentation_spec)
 
     # Determine output path
@@ -600,10 +584,6 @@ def convert_notebooklm_to_editable(
 
     builder.save(output_pptx)
     result["timing"]["building"] = round(time.time() - t0, 2)
-
-    # Clean up temp images (they're now embedded in the PPTX)
-    import shutil
-    shutil.rmtree(temp_dir, ignore_errors=True)
 
     # Save specs JSON alongside
     specs_path = Path(output_pptx).with_suffix(".json")
@@ -627,9 +607,9 @@ def convert_notebooklm_to_editable(
     result["timing"]["total"] = total_time
 
     logger.info("=" * 50)
-    logger.info("Hybrid OCR Conversion Complete")
+    logger.info("OCR Conversion Complete")
     logger.info("  Title: %s", title)
-    logger.info("  Slides: %d (images preserved as backgrounds)", total_slides)
+    logger.info("  Slides: %d", total_slides)
     logger.info("  Time: %.1fs (extract=%.1fs, ocr=%.1fs, build=%.1fs)",
                 total_time, result["timing"]["extraction"],
                 result["timing"]["ocr"], result["timing"]["building"])
@@ -642,7 +622,7 @@ def convert_notebooklm_to_editable(
 def main():
     """CLI entry point for OCR conversion."""
     parser = argparse.ArgumentParser(
-        description="Convert NotebookLM image PPTX to hybrid editable PPTX (image bg + text overlay)",
+        description="Convert NotebookLM image PPTX to editable Recodme PPTX",
     )
     parser.add_argument("input_pptx", help="Path to NotebookLM-generated PPTX file")
     parser.add_argument("--output", "-o", help="Output path for editable PPTX")
