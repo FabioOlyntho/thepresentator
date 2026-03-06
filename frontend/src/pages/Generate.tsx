@@ -1,4 +1,4 @@
-import { useState, type CSSProperties } from 'react';
+import { useState, useEffect, type CSSProperties } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { createJob, nlmAuthStatus } from '../api';
 import type { GenerationMode } from '../types';
@@ -8,7 +8,6 @@ import PdnobLevelSelector from '../components/PdnobLevelSelector';
 import PromptInput from '../components/PromptInput';
 import LanguagePicker from '../components/LanguagePicker';
 import BrandSelector from '../components/BrandSelector';
-import NlmAuthModal from '../components/NlmAuthModal';
 
 const NLM_MODES = new Set(['notebooklm', 'ocr_editable', 'full_slide', 'pdnob']);
 
@@ -24,26 +23,21 @@ export default function Generate() {
   const [pdnobLevel, setPdnobLevel] = useState<'ocr_only' | 'remove_bg' | 'full'>('full');
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
-  const [showAuth, setShowAuth] = useState(false);
+  const [nlmAuth, setNlmAuth] = useState<boolean | null>(null);
+
+  // Check NLM auth status on mount and when mode changes
+  useEffect(() => {
+    if (NLM_MODES.has(mode)) {
+      nlmAuthStatus()
+        .then(({ authenticated }) => setNlmAuth(authenticated))
+        .catch(() => setNlmAuth(null));
+    }
+  }, [mode]);
 
   async function handleGenerate() {
     if (!file) return;
     setSubmitting(true);
     setError('');
-
-    // Check NLM auth for modes that need it
-    if (NLM_MODES.has(mode)) {
-      try {
-        const { authenticated } = await nlmAuthStatus();
-        if (!authenticated) {
-          setSubmitting(false);
-          setShowAuth(true);
-          return;
-        }
-      } catch {
-        // If auth check fails, proceed anyway (fallback will handle it)
-      }
-    }
 
     try {
       const options: Record<string, unknown> = {
@@ -122,6 +116,26 @@ export default function Generate() {
         </div>
       </div>
 
+      {NLM_MODES.has(mode) && nlmAuth === false && (
+        <div style={styles.authBanner}>
+          <div style={styles.authIcon}>!</div>
+          <div>
+            <strong>NotebookLM not authenticated</strong>
+            <p style={styles.authText}>
+              Run this command on your computer to sign in:
+            </p>
+            <code style={styles.authCode}>
+              .\venv\Scripts\python.exe scripts\auth_local.py
+            </code>
+            <p style={styles.authNote}>
+              A Chrome window will open for Google sign-in. After login, cookies
+              are uploaded to the server automatically. You can still generate
+              without auth — it will use Editable mode as fallback.
+            </p>
+          </div>
+        </div>
+      )}
+
       {error && (
         <div style={styles.error}>{error}</div>
       )}
@@ -143,16 +157,6 @@ export default function Generate() {
           'Generate Presentation'
         )}
       </button>
-
-      {showAuth && (
-        <NlmAuthModal
-          onSuccess={() => {
-            setShowAuth(false);
-            handleGenerate();
-          }}
-          onCancel={() => setShowAuth(false)}
-        />
-      )}
     </div>
   );
 }
@@ -243,5 +247,52 @@ const styles: Record<string, CSSProperties> = {
     borderRadius: '50%',
     animation: 'spin 0.6s linear infinite',
     display: 'inline-block',
+  },
+  authBanner: {
+    display: 'flex',
+    gap: '14px',
+    padding: '16px 20px',
+    borderRadius: 'var(--radius-md)',
+    background: 'rgba(245, 158, 11, 0.08)',
+    border: '1px solid rgba(245, 158, 11, 0.3)',
+    marginBottom: '16px',
+    alignItems: 'flex-start',
+  },
+  authIcon: {
+    width: '28px',
+    height: '28px',
+    borderRadius: '50%',
+    background: 'rgba(245, 158, 11, 0.15)',
+    color: '#D97706',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    fontWeight: 700,
+    fontSize: '15px',
+    flexShrink: 0,
+    marginTop: '2px',
+  },
+  authText: {
+    fontSize: '13px',
+    color: 'var(--pr-gray)',
+    margin: '6px 0 8px',
+  },
+  authCode: {
+    display: 'block',
+    padding: '10px 14px',
+    borderRadius: '6px',
+    background: 'var(--pr-charcoal)',
+    color: '#E2E8F0',
+    fontSize: '13px',
+    fontFamily: 'var(--font-mono)',
+    userSelect: 'all' as const,
+    cursor: 'text',
+  },
+  authNote: {
+    fontSize: '12px',
+    color: 'var(--pr-gray)',
+    margin: '8px 0 0',
+    opacity: 0.7,
+    lineHeight: 1.5,
   },
 };
