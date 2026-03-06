@@ -352,6 +352,45 @@ def check_nlm_auth() -> bool:
         return False
 
 
+def save_uploaded_cookies(cookies: list[dict]) -> bool:
+    """Save cookies uploaded from the local auth_local.py script."""
+    import json
+
+    profile_dir = Path.home() / ".notebooklm-mcp-cli" / "profiles" / "default"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+
+    cookie_data = []
+    for c in cookies:
+        cookie_data.append({
+            "name": c.get("name", ""),
+            "value": c.get("value", ""),
+            "domain": c.get("domain", ""),
+            "path": c.get("path", "/"),
+            "expires": c.get("expires", -1),
+            "httpOnly": c.get("httpOnly", False),
+            "secure": c.get("secure", False),
+            "sameSite": c.get("sameSite", "Lax"),
+        })
+
+    cookies_path = profile_dir / "cookies.json"
+    cookies_path.write_text(json.dumps(cookie_data, indent=2), encoding="utf-8")
+
+    from datetime import datetime, timezone
+    metadata = {
+        "csrf_token": "",
+        "session_id": "",
+        "build_label": "",
+        "updated_at": time.time(),
+        "last_validated": datetime.now(timezone.utc).isoformat(),
+    }
+    metadata_path = profile_dir / "metadata.json"
+    metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+    google_cookies = [c for c in cookie_data if "google" in c.get("domain", "")]
+    logger.info("NLM Auth: saved %d uploaded cookies (%d Google)", len(cookie_data), len(google_cookies))
+    return len(google_cookies) > 0
+
+
 async def validate_nlm_auth() -> bool:
     """Actually validate NotebookLM cookies by making a lightweight HTTP request.
 

@@ -17,9 +17,11 @@ import logging
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from backend.config import settings
 from backend.services.nlm_auth_service import (
     close_session,
     get_session,
+    save_uploaded_cookies,
     start_session,
     validate_nlm_auth,
 )
@@ -47,6 +49,11 @@ class TypeRequest(BaseModel):
 
 class KeyRequest(BaseModel):
     key: str  # "Enter", "Tab", "Backspace", etc.
+
+
+class CookieUploadRequest(BaseModel):
+    cookies: list[dict]
+    api_key: str
 
 
 class SaveResult(BaseModel):
@@ -147,3 +154,22 @@ async def nlm_auth_cancel():
     """Cancel the auth session without saving."""
     await close_session()
     return {"status": "cancelled"}
+
+
+@router.post("/notebooklm/upload-cookies", response_model=SaveResult)
+async def nlm_upload_cookies(req: CookieUploadRequest):
+    """Receive cookies from local auth_local.py script."""
+    if not settings.GEMINI_API_KEY or req.api_key != settings.GEMINI_API_KEY:
+        raise HTTPException(status_code=403, detail="Invalid API key")
+
+    if not req.cookies:
+        return SaveResult(success=False, message="No cookies provided")
+
+    try:
+        saved = save_uploaded_cookies(req.cookies)
+        if saved:
+            return SaveResult(success=True, message="Cookies saved — NotebookLM authenticated")
+        return SaveResult(success=False, message="No Google cookies found in upload")
+    except Exception as e:
+        logger.error("Failed to save uploaded cookies: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
