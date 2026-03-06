@@ -1,9 +1,10 @@
 """
 NotebookLM Auth Service — Remote browser login via Playwright screenshots.
 
-Manages a headless Chromium browser on the server. The frontend streams
-screenshots and sends click/keyboard events so the user can complete
-Google sign-in without needing SSH access.
+Manages a Chromium browser on the server inside an Xvfb virtual display.
+The browser runs in headed mode (headless=False) so Google cannot detect
+automation via CDP signals. The frontend streams screenshots and sends
+click/keyboard events so the user can complete Google sign-in.
 
 Flow: start() → screenshot loop + click/type → save_cookies() → close()
 """
@@ -11,6 +12,8 @@ Flow: start() → screenshot loop + click/type → save_cookies() → close()
 import asyncio
 import base64
 import logging
+import os
+import sys
 import time
 from pathlib import Path
 
@@ -88,18 +91,42 @@ if (navigator.connection) {
 
 
 class NlmAuthSession:
-    """Manages a headless Playwright browser for Google login."""
+    """Manages a Playwright browser inside Xvfb for Google login."""
 
     def __init__(self):
+        self._display = None
         self._playwright = None
         self._browser = None
         self._context = None
         self.page = None
         self.started_at = 0.0
 
+    def _start_virtual_display(self):
+        """Start Xvfb virtual display on Linux so we can run headed Chrome."""
+        if sys.platform != "linux":
+            logger.info("NLM Auth: not Linux, skipping Xvfb (using headless)")
+            return False
+        try:
+            from pyvirtualdisplay import Display
+            self._display = Display(visible=False, size=(1280, 900))
+            self._display.start()
+            logger.info("NLM Auth: Xvfb virtual display started on :%s", self._display.display)
+            return True
+        except Exception as e:
+            logger.warning("NLM Auth: Xvfb not available (%s), falling back to headless", e)
+            self._display = None
+            return False
+
     async def start(self) -> str:
-        """Launch browser with stealth patches and navigate to Google login."""
+        """Launch browser and navigate to Google login.
+
+        On Linux (production VPS): uses Xvfb + headed mode to bypass Google's
+        headless browser detection. On other platforms: falls back to headless.
+        """
         from playwright.async_api import async_playwright
+
+        # Start virtual display first (Linux only)
+        use_headed = self._start_virtual_display()
 
         self._playwright = await async_playwright().start()
 
@@ -107,7 +134,7 @@ class NlmAuthSession:
         # with history, local storage, etc. from previous sessions
         self._context = await self._playwright.chromium.launch_persistent_context(
             user_data_dir=_BROWSER_PROFILE_DIR,
-            headless=True,
+            headless=not use_headed,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--no-sandbox",
@@ -143,7 +170,8 @@ class NlmAuthSession:
 
         self.started_at = time.monotonic()
 
-        logger.info("NLM Auth: navigating to Google login (stealth mode)")
+        mode = "headed+Xvfb" if use_headed else "headless+stealth"
+        logger.info("NLM Auth: navigating to Google login (%s mode)", mode)
         await self.page.goto(GOOGLE_LOGIN_URL, wait_until="networkidle", timeout=30000)
         return await self.screenshot()
 
@@ -262,7 +290,7 @@ class NlmAuthSession:
         return (time.monotonic() - self.started_at) > SESSION_TIMEOUT
 
     async def close(self):
-        """Close browser and clean up."""
+        """Close browser, virtual display, and clean up."""
         if self._context:
             try:
                 await self._context.close()
@@ -273,6 +301,13 @@ class NlmAuthSession:
                 await self._playwright.stop()
             except Exception:
                 pass
+        if self._display:
+            try:
+                self._display.stop()
+                logger.info("NLM Auth: Xvfb display stopped")
+            except Exception:
+                pass
+        self._display = None
         self._browser = None
         self._context = None
         self.page = None
